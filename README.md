@@ -22,6 +22,9 @@ What makes it technically interesting:
 | ![Project Cockpit](docs/screenshots/cockpit.png) **Project Cockpit** — phase gates, artifact states (an artifact can be `approved` *and* `outdated` at once), derived tasks and the audit-backed activity feed. | ![Visual Studio editor](docs/screenshots/studio-editor.png) **Visual Studio** — Puck canvas over a `page.composition` artifact rendering with the project's own design tokens; the approval cycle lives in the left rail. |
 | ![Studio pages](docs/screenshots/studio-pages.png) **Studio index** — one composition artifact per approved-sitemap page, each with its sealed version, section count and state. | ![Assistant](docs/screenshots/assistant-skills.png) **The single contextual assistant** — five closed-list skills, each showing its §9.1 contract. Violet is reserved exclusively for agent activity. |
 
+![Deploy & Release](docs/screenshots/deploy.png)
+*Deploy & Release: the live §7.8 checklist gates release creation (plus an explicit human confirmation), each release seals the exact approved versions of every input and git-tags the generated repo, and local production/preview slots deploy immutable builds — rollback is just deploying the previous release. Vercel will sit behind the same `DeployProvider` interface.*
+
 ![Skill launch form](docs/screenshots/assistant-model-cost.png)
 *Launching a skill: what it reads → what it writes (always as a proposal), per-invocation model selector with live cost-per-MTok, and the BYOK key referenced by label + last4 — never by value.*
 
