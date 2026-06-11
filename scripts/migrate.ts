@@ -49,8 +49,12 @@ async function main(): Promise<void> {
     const { PGlite } = await import("@electric-sql/pglite");
     const { drizzle } = await import("drizzle-orm/pglite");
     const { migrate } = await import("drizzle-orm/pglite/migrator");
+    // PGlite es mono-proceso: el lock evita corromper la DB si el dev server
+    // (u otro script) la tiene abierta (ver src/db/pglite-lock.ts).
+    const { acquirePgliteLock } = await import("../src/db/pglite-lock");
 
-    const dataDir = path.join(root, ".data", "pglite");
+    const dataDir = process.env.PGLITE_DATA_DIR ?? path.join(root, ".data", "pglite");
+    acquirePgliteLock(dataDir);
     mkdirSync(dataDir, { recursive: true });
     const client = new PGlite(dataDir);
     try {

@@ -7,13 +7,16 @@ import { drizzle as drizzleNodePg } from "drizzle-orm/node-postgres";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { Pool } from "pg";
 
+import { acquirePgliteLock } from "./pglite-lock";
 import * as schema from "./schema";
 
 /**
  * Driver-agnostic DB factory.
  *
  * - `DATABASE_URL` set → real Postgres via `pg` Pool.
- * - Otherwise → embedded PGlite persisting to `./.data/pglite`.
+ * - Otherwise → embedded PGlite persisting to `./.data/pglite` (override:
+ *   `PGLITE_DATA_DIR`, used by smokes for data dirs aislados), protegido por
+ *   un lockfile de proceso único (ver `pglite-lock.ts`).
  *
  * No other module may import a driver directly — always `getDb()` (CLAUDE.md).
  */
@@ -21,7 +24,8 @@ import * as schema from "./schema";
 /** Driver-agnostic database handle (covers both `pg` and PGlite drivers). */
 export type Db = PgDatabase<PgQueryResultHKT, typeof schema>;
 
-export const PGLITE_DATA_DIR = path.join(process.cwd(), ".data", "pglite");
+export const PGLITE_DATA_DIR =
+  process.env.PGLITE_DATA_DIR ?? path.join(process.cwd(), ".data", "pglite");
 
 /**
  * CRITICAL: the instance is cached on `globalThis` so it survives Next.js
@@ -39,6 +43,7 @@ function createDb(): Db {
     const pool = new Pool({ connectionString: databaseUrl });
     return drizzleNodePg(pool, { schema });
   }
+  acquirePgliteLock(PGLITE_DATA_DIR);
   mkdirSync(PGLITE_DATA_DIR, { recursive: true });
   const client = new PGlite(PGLITE_DATA_DIR);
   return drizzlePglite(client, { schema });
