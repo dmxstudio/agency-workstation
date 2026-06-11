@@ -1,143 +1,127 @@
-# Agency Workstation (MVP)
+# Agency Workstation
 
-**Agency Workstation** (codename) es el monolito de plataforma para agencias web: especificación de proyectos como **artefactos versionados e inmutables** con ciclo humano de aprobación (draft → revisión → aprobación), grafo de dependencias con propagación de `outdated` (marca, nunca regenera) y audit log en toda mutación.
+**An agency production OS: from brief to deployed site, with AI that proposes and humans who govern.**
 
-La fuente de verdad de alcance y reglas es la spec del producto: [`docs/product-spec-v1.2.md`](docs/product-spec-v1.2.md). Las convenciones de desarrollo viven en [`CLAUDE.md`](CLAUDE.md).
+Agency Workstation is a platform monolith for web agencies. The thesis: agencies don't need another AI site generator — they need a production control system where every critical output is a typed, versioned, human-approved artifact, and AI operates inside that cycle instead of around it. This repository is the complete MVP (Next.js 16 + Drizzle + PGlite, with generated projects on Next + Payload + Puck), runnable locally with zero external services.
+
+What makes it technically interesting:
+
+- **Artifact model as the single source of truth (§8).** Every project decision — intake, strategy, sitemap, design tokens, CMS schema, page copy, page compositions, releases — is an artifact with a Zod-validated JSONB payload, an explicit state machine (`empty → draft → in_review → approved`), **immutable versions**, structural diffs, and a fixed dependency graph where `outdated` propagation *marks but never regenerates*. Every mutation hits an audit log.
+- **Real code generation with governed regeneration (§18.2).** Approved artifacts compile into a self-contained Next.js + Payload + Puck project (one local git repo per project). Rendering is 100% deterministic (idempotence verified by hash), ownership is tracked per file in a sha256 manifest (`codegen` vs `human`), partial regeneration only rewrites pristine codegen files, and conflicts are **reported as data — never auto-resolved**.
+- **A visual editor that never bypasses governance.** The Visual Studio embeds Puck over `page.composition` artifacts (one per page of the approved sitemap), with a 34-component registry mirrored from the generated project's template, CMS bindings validated against the approved schema, and the exact same approval cycle as every other artifact. The Data JSON renders identically in the platform canvas and the generated site.
+- **Client review without accounts.** Review rounds run over a sealed release: a token link is the client's entire credential, the public page embeds the *real* preview deployment (iframe + per-section anchors), open comments derive tasks visible in the Cockpit, and client approvals are a separate type that **never transitions internal artifacts**.
+- **Immutable releases behind a provider-agnostic deploy interface.** Releases freeze the checklist plus the exact sealed versions of every input and tag the generated repo; the local `DeployProvider` builds one immutable build per release (`git archive` of the tag — a sealed build is never rebuilt), serves production/preview slots, checks status against reality (live pid + HTTP probe), and rollback is just deploying the previous release. Vercel will sit behind the same interface.
+- **A BYOK agent runtime where provenance ≠ decision (§19).** Five closed-list skills run through an async runner with `anthropic | openai | mock` providers behind one interface; workspace API keys are encrypted at rest (AES-256-GCM), never logged, never sent to the client, never reach generated projects. An agent run can only ever produce a *proposal* (draft + validations + diff); **no code path lets an agent approve an artifact** — a static assert in the smoke tests enforces it. Approving seals a version with `origin: "agent_run"`, which attributes the *content* to the run while the *decision* remains a human act, audited.
+
+> **Docs are in Spanish** (the product's working language); the architecture map in [`CLAUDE.md`](CLAUDE.md) is the best starting point for both humans and coding agents. The full product spec is [`docs/product-spec-v1.2.md`](docs/product-spec-v1.2.md).
+
+---
+
+## Estado
+
+**MVP completo.** Los 6 pasos de la secuencia de construcción (§14) están construidos y cada uno tiene su drill end-to-end ejecutable:
+
+1. **Platform core + modelo de artefactos** — auth local (email+password, sesiones httpOnly en DB) detrás de un adapter, workspaces con roles (`admin`/`member`/`client`), proyectos, audit log; 8 tipos de artefacto con payload Zod validado en cada escritura, versiones inmutables, aprobaciones exclusivamente humanas, diff estructural y propagación de `outdated`.
+2. **Spec OS + Project Cockpit** — formularios tipados de las 6 secciones de spec; stepper de fases con gates, artefactos por fase, tareas y feed de actividad; editor de artefactos con tabs Editar/Diff/Historial.
+3. **Generator** — generación y regeneración parcial idempotente de proyectos reales (Next 16 + Tailwind v4 + Payload 3 con SQLite embebido + Puck) desde artefactos aprobados, con manifest de ownership y conflictos como dato.
+4. **Visual Studio + CMS** — editor Puck embebido sobre los artefactos de composición (mismo ciclo de aprobación §13), registry de 34 componentes, bindings CMS validados, preview responsive; vista read-only del modelo de contenido + mapa de bindings.
+5. **Client Review + Deploy & Release** — checklist de release §7.8, releases inmutables (versión sellada + tag git), deploy local por slots con rollback, rondas de review de cliente por link con token y aprobación de cliente como tipo aparte.
+6. **Agent Runtime** — asistente contextual único, las 5 skills de la lista cerrada §9.3, runner async in-process, BYOK cifrado por workspace, proveedor `mock` de primera clase y el ciclo propose → diff → decisión humana con provenance `agent_run`.
 
 ## Requisitos
 
-- **Node.js 20+** (no hace falta nada más: la base de datos por defecto es PGlite, un Postgres embebido que persiste en `./.data/pglite`).
+- **Node.js 20+** y **git** en el PATH (el Generator crea un repo git por proyecto y el deploy local construye con `git archive`).
+- Nada más: la base de datos por defecto es **PGlite** (Postgres embebido) y persiste en `./.data/pglite`. Sin Docker, sin servicios externos; la demo completa corre offline.
 
 ## Quickstart
 
 ```bash
 npm install
 npm run db:migrate   # aplica el schema a la DB local (PGlite)
-npm run db:seed      # datos demo (idempotente)
+npm run db:seed      # datos demo (idempotente; imprime los links al final)
 npm run dev          # http://localhost:3000
 ```
 
 Credenciales demo (las imprime también el seed):
 
-| Campo      | Valor                          |
-| ---------- | ------------------------------ |
-| Email      | `demo@agency.local`            |
-| Contraseña | `demo1234`                     |
-| Workspace  | Demo Agency (`/w/demo`)        |
+| Campo      | Valor                   |
+| ---------- | ----------------------- |
+| Email      | `demo@agency.local`     |
+| Contraseña | `demo1234`              |
+| Workspace  | Demo Agency (`/w/demo`) |
 
-El seed crea el proyecto **"Sitio Corporativo Acme"** con el grafo de 8 artefactos instanciado y una historia realista producida por los servicios de dominio reales: `spec.intake` aprobado en **v2** (re-scope que añade la página de carreras), `spec.strategy` marcado `outdated` por esa propagación (§8.4) y **re-validado como v2**, `spec.sitemap` aprobado (6 páginas, con un borrador previo al re-scope en su historial), `design.tokens`, `cms.collections` (3 colecciones) y `content.page` (copy/SEO de 3 páginas) aprobados, una tarea manual abierta y el feed de actividad/audit completo. Las composiciones (`page.composition`, **un artefacto por página** del sitemap aprobado) quedan TODAS aprobadas (las páginas sin composición autorada reciben el scaffold del Generator sellado vía el ciclo §13).
+El seed crea el proyecto **«Sitio Corporativo Acme»** con una historia realista producida por los servicios de dominio reales (no inserts a mano): `spec.intake` aprobado en v2 (re-scope que añade la página de carreras), `spec.strategy` marcado `outdated` por esa propagación (§8.4) y re-validado como v2, `spec.sitemap` aprobado (6 páginas), `design.tokens`, `cms.collections` y `content.page` aprobados, TODAS las composiciones (`page.composition`, un artefacto por página) selladas vía el ciclo §13, el repo del proyecto generado, el **release v1 sellado** (versión inmutable + tag git `release-1`), una **ronda de review de cliente abierta** con dos comentarios demo (uno abierto con su tarea derivada visible en el Cockpit, uno resuelto) y **sin aprobación de cliente** — ese momento queda para ti en `/review/<token>` (el seed imprime el link). El seed **nunca despliega** (los builds tardan minutos).
 
-Además el seed deja el **paso 5 listo para vivirlo**: genera/regenera el repo del proyecto, valida el checklist de release §7.8 en verde, **sella el release v1** (versión inmutable del artefacto `release` + tag git `release-1`) y abre una **ronda de review de cliente** («Cliente Acme — ronda 1») con dos comentarios demo — uno abierto (su tarea derivada §12.2 aparece en el Cockpit) y uno resuelto — y **sin aprobación de cliente** (ese momento queda para ti en `/review/<token>`; el seed imprime el link al final). El seed **nunca despliega** (los builds tardan minutos): hazlo desde la pantalla Deploy o con `npx tsx scripts/e2e-deploy-review.ts`.
+Además deja **un agent run real en `proposed`**: el workspace recibe una key `mock` BYOK («Proveedor de demostración») y el runner deja una propuesta de `revise-artifact` sobre la composición de «Nosotros» (proveedor mock determinista, $0) esperando tu decisión humana — el seed también imprime ese link. El run se crea solo si el proyecto aún no tiene runs; una vez decidido, el momento no se re-abre re-sembrando (demo impoluta: borra `./.data` y re-siembra).
 
-Y el **paso 6 también queda listo para vivirlo**: el workspace recibe una key `mock` BYOK («Proveedor de demostración») y el runner real deja **un agent run en estado `proposed`** sobre la composición de «Nosotros» (`revise-artifact`, instrucción «Haz el tono más cercano y menciona el servicio 24h», proveedor mock determinista, $0). La propuesta es un draft + validaciones + diff **esperando tu decisión humana** — apruébala, edítala o recházala desde la pantalla del run (el seed imprime el link al final), el Studio o el asistente. El run se crea solo si el proyecto aún no tiene runs; una vez decidido, el momento no se re-abre re-sembrando (demo impoluta: borra `./.data` y re-siembra). Con la propuesta pendiente, el checklist VIVO de release marca «nosotros» sin aprobar — es lo esperado: el release v1 congeló su checklist en verde al sellarse.
-
-Los **tres artefactos que requiere el Generator** (`spec.sitemap`, `cms.collections`, `design.tokens`) quedan aprobados: el proyecto demo es generable nada más sembrar (ver la sección Generator).
-
-> PGlite es de **un solo proceso**: para ejecutar el seed o cualquier script `tsx` que toque la DB, para antes el dev server (`npm run dev`) y relánzalo después.
+> **PGlite es de un solo proceso:** para el dev server (`npm run dev`) antes de ejecutar el seed o cualquier script `tsx` que toque la DB, y relánzalo después.
 
 Para regenerar la demo desde cero: borra `./.data` y repite `db:migrate` + `db:seed`.
 
-## Estado actual del MVP
+## Tour de la demo
 
-Hecho:
+El recorrido completo brief → sitio desplegado, en orden:
 
-- **Platform core** — auth local (email+password, sesiones httpOnly en DB) detrás del adapter `src/modules/platform-core/auth/adapter.ts`, workspaces con roles (`admin`/`member`/`client`), proyectos, audit log.
-- **Modelo de artefactos** (`src/modules/artifacts`) — 8 tipos con payload Zod validado en cada escritura, máquina de estados (`empty|draft|in_review|approved|locked` + flags `outdated`/`rejected`), versiones inmutables, aprobaciones humanas (ningún code path permite que un agente apruebe), diff estructural, grafo fijo de dependencias con propagación de `outdated` y tareas derivadas.
-- **Spec OS** (`src/modules/spec-os`) — formularios tipados de las 6 secciones de spec.
-- **Pantallas** — login/registro/onboarding, home de workspace con tabla de proyectos, **Project Cockpit** (stepper de fases con gates, artefactos por fase, tareas, feed de actividad) y **editor de artefactos** con tabs Editar/Diff/Historial y barra de acciones por estado y rol.
-- **Design system** (`src/ui`) — tokens §11.4: monocromo + acentos semánticos, violeta reservado a actividad de agentes, mono para IDs/versiones/diffs.
-- **Generator** (`src/modules/generator` + pantalla `/w/<slug>/p/<id>/generator`) — generación y regeneración parcial de proyectos reales desde los artefactos aprobados (ver sección Generator).
-- **Visual Studio + CMS** (`src/modules/studio` + pantallas `/studio`, `/studio/<página>` y `/cms`) — editor Puck embebido con el ciclo de aprobación §13 y vistas del modelo de contenido (ver sección Studio y CMS).
-- **Review + Deploy & Release** (`src/modules/review`, `src/modules/deploy` + pantallas `/review`, `/deploy` y la superficie pública `/review/<token>`) — checklist de release §7.8, releases inmutables, deploy local por slots con rollback y review de cliente por link con token (ver sección Review y Deploy).
-- **Agent Runtime** (`src/modules/agents` + asistente contextual, pantalla `/runs` y settings BYOK) — las 5 skills §9.3 con contrato operativo, runner async in-process, BYOK cifrado por workspace, proveedor mock de primera clase y el ciclo propose→diff→approve con provenance `agent_run` (ver sección Agentes).
+1. **Cockpit** (`/w/demo/p/<id>`) — stepper de fases con gates, artefactos por fase con StatusPill y flags, tareas (incluida la derivada del comentario de cliente abierto) y feed de actividad/audit completo.
+2. **Spec OS** — abre cualquier artefacto de spec: tabs Editar/Diff/Historial, barra de acciones por estado y rol, historial de versiones inmutables (mira el diff v1→v2 de `spec.intake`).
+3. **Generator** (`…/generator`) — la checklist exige `spec.sitemap`, `cms.collections` y `design.tokens` aprobados (el seed los deja listos) y solo consume versiones selladas. Genera/regenera el repo en `.data/projects/<projectId>/` con commit descriptivo y manifest de ownership; los conflictos (§18.2) se reportan en pantalla, nunca se auto-resuelven. Para correr el proyecto generado (pasos del usuario — la plataforma nunca instala dependencias):
 
-Pendiente (fases posteriores de la spec):
+   ```bash
+   cd .data/projects/<projectId>
+   npm install
+   npm run generate:types   # re-sincroniza payload-types.ts con las colecciones generadas
+   npm run seed             # carga los fixtures en la SQLite del proyecto
+   npm run dev              # http://localhost:4000  (sitio, /admin de Payload, /edit con Puck)
+   ```
 
-- **Cierre de gates de fase** (el stepper marca "cerrable" pero no existe la acción de cierre con lock masivo + avance de `currentPhase`).
-- **Clerk** como proveedor de auth (llegará detrás del mismo adapter, §18.6).
-- **Vercel** como DeployProvider real (llegará detrás de la misma interfaz `provider.ts`).
+4. **Studio y CMS** (`…/studio`, `…/studio/<página>`, `…/cms`) — índice de páginas con estado por composición y «Sincronizar páginas desde sitemap»; editor Puck con los tokens del proyecto inyectados en el canvas, preview responsive (375/768/1280), autosave de borrador con issues Zod, diff estructural draft↔aprobada y panel de aprobación §13 (aprobar sella versión inmutable y el canvas pasa a read-only); vista read-only del modelo de contenido con el mapa de bindings. El Data JSON renderiza idéntico en plataforma y template — el contrato lo verifica `scripts/e2e-studio.ts`.
+5. **Review por token** (`…/review` y la superficie pública `/review/<token>`) — el equipo abre rondas sobre un release sellado; el link con token es la credencial completa del cliente (sin cuenta, R8). La página pública embebe el deployment real del slot preview por iframe con las secciones como anclas (despliega primero el release v1 para ver el sitio embebido), hilos de comentarios anclados a página/sección, comentario abierto → tarea derivada en el Cockpit, y la aprobación del cliente como tipo aparte (`client_approvals`) que jamás transiciona artefactos internos.
+6. **Deploy** (`…/deploy`) — checklist de release §7.8 en vivo (5 validaciones automáticas), sellado de release con confirmación humana con rol, y deploy por slots: `production` en `http://localhost:4100` y `preview` en `http://localhost:4200` (envs `DEPLOY_PROD_PORT` / `DEPLOY_PREVIEW_PORT`; builds en `.data/deploys/`). Build inmutable por release, estado contra la realidad (pid vivo + probe HTTP), `PORT_IN_USE` claro si el puerto lo ocupa un proceso ajeno, rollback = desplegar el release anterior. Nota: con la propuesta del agent run pendiente, el checklist VIVO marca «nosotros» sin aprobar — es lo esperado; el release v1 congeló su checklist en verde al sellarse.
+7. **Asistente y agent runs** (panel lateral en Cockpit/Spec/Studio, `…/runs`) — el asistente contextual invoca las 5 skills (`generate-spec-draft`, `generate-cms-schema`, `write-page-copy`, `compose-page-draft`, `revise-artifact`) sobre el Project Context API (solo versiones aprobadas + el draft del propio target). Decide el run pendiente sobre «Nosotros» desde `/runs/<runId>`: contrato lee→escribe con las versiones exactas leídas (§9.6), validaciones, diff y Aprobar/Rechazar/Abrir en editor. Para usar un proveedor real: *Ajustes → Claves LLM (BYOK)* como admin, añade tu key de Anthropic (`sk-ant-…`, modelo por defecto `claude-sonnet-4-6`) o de OpenAI (`OPENAI_MODEL_ID`, por defecto `gpt-4o`); la plataforma la valida contra el proveedor antes de cifrarla (AES-256-GCM) y solo expone id/etiqueta/últimos 4.
 
-## Generator (§7.3, §18.2)
+## Comandos
 
-El Generator convierte los artefactos **aprobados** de un proyecto en una app Next.js real (Next 16 + Tailwind v4 + Payload 3 con SQLite embebido + editor Puck), instanciada desde el template `templates/project-base/`.
+> Todos los scripts `tsx` que tocan la DB exigen el dev server parado (PGlite es de un solo proceso). Los e2e asumen la demo sembrada.
 
-**Flujo:**
+| Comando                                   | Qué hace                                                                                                                                                              |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                             | Dev server (http://localhost:3000)                                                                                                                                     |
+| `npm run build`                           | Build de producción                                                                                                                                                    |
+| `npm run lint`                            | ESLint                                                                                                                                                                 |
+| `npm run db:migrate`                      | Aplica las migraciones SQL de `src/db/migrations`                                                                                                                      |
+| `npm run db:seed`                         | Datos demo (idempotente; imprime los links de review y del run al final)                                                                                               |
+| `npx tsx scripts/e2e-generator.ts`        | Genera el proyecto demo + drill de conflictos §18.2. **OJO: re-crea el repo demo y destruye los tags `release-N`; re-sembrar después**                                  |
+| `npx tsx scripts/e2e-studio.ts`           | Drill del paso 4: composición → diff → aprobación → regeneración → el sitio generado sirve el cambio (verifica el contrato Studio↔template). **Misma advertencia: re-crea el repo demo.** Deja flags `outdated` legítimos (§8.4) |
+| `npx tsx scripts/e2e-deploy-review.ts`    | Drill del paso 5: decide propuestas pendientes (consume el momento demo del run) → checklist → release → deploy(preview) → review por token → comentario→tarea→resolver → aprobación de cliente → rollback → stop. Mata todo lo que arranca; cada ejecución sella un release más |
+| `npx tsx scripts/e2e-agents.ts`           | Drill del paso 6: las 5 skills por el runner real con mock → proposed → diff → decisión humana con provenance, reject con feedback, AUTH_FAILED sin fugas de plaintext. **Restaura la demo al final (re-runnable)**                |
+| `npx tsx scripts/smoke-agents-runtime.ts` | Smoke del runtime de agentes: crypto BYOK, keys, runner, retries (aislado, se limpia solo)                                                                              |
+| `npx tsx scripts/smoke-skills.ts`         | Smoke de las 5 skills + provenance `agent_run` + el assert estático de imports prohibidos (aislado, se limpia solo)                                                     |
+| `npx tsx scripts/smoke-review.ts`         | Smoke del módulo review/release (aislado, se limpia solo)                                                                                                              |
+| `npx tsx scripts/smoke-deploy.ts`         | Smoke del DeployProvider local (requiere el repo demo generado con `node_modules`; deja los slots 4100/4200 libres)                                                     |
+| `npx tsx scripts/smoke-artifacts.ts`      | Smoke del dominio de artefactos (se limpia solo)                                                                                                                       |
+| `npx tsx scripts/smoke-generator.ts`      | Smoke del módulo generator (aislado, se limpia solo)                                                                                                                   |
+| `npx tsx scripts/smoke-pglite-lock.ts`    | Smoke del lock de proceso único de PGlite (dataDir temporal: seguro con el dev server vivo)                                                                            |
+| `npx tsx src/modules/studio/registry/smoke-render.mts` | Smoke de render del registry del Studio (RSC)                                                                                                             |
 
-1. En la pantalla `Generator` del proyecto (`/w/<slug>/p/<id>/generator`), la checklist exige `spec.sitemap`, `cms.collections` y `design.tokens` aprobados (`content.page` y `page.composition` enriquecen el resultado si también lo están). Solo consume **versiones selladas** — nunca borradores.
-2. **Generar** copia el template, renderiza el codegen desde los artefactos (config del sitio, tokens CSS, navegación, colecciones Payload, fixtures de contenido con páginas Puck compuestas, scaffolds de composición) y crea un **repo git local** con commit descriptivo y manifest de ownership (sha256 por archivo).
-3. **Regenerar** (tras aprobar nuevas versiones de la spec) reescribe **solo** archivos owned-by-codegen prístinos; las ediciones humanas y las composiciones jamás se tocan. Los conflictos (edición manual en zona codegen, binding a campo/colección eliminado, huérfanos modificados…) se **reportan como dato** en la pantalla, nunca se resuelven solos. La operación es idempotente: misma spec ⇒ cero diffs.
+## Mapa de módulos
 
-**Dónde quedan los proyectos:** `.data/projects/<projectId>/` (un repo git por proyecto; override con la env `GENERATED_PROJECTS_DIR`). Cada generación inserta una fila en la tabla `generations` (historial de la pantalla) y un evento en el audit log.
-
-**Cómo correr un proyecto generado** (pasos del usuario — la plataforma nunca instala dependencias):
-
-```bash
-cd .data/projects/<projectId>
-npm install
-npm run generate:types   # re-sincroniza payload-types.ts con las colecciones generadas
-npm run seed             # carga los fixtures (src/seed/content.json) en la SQLite del proyecto
-npm run dev              # http://localhost:4000  (sitio publicado, /admin de Payload, /edit con Puck)
+```
+src/db/                      schema Drizzle, factory getDb(), migraciones
+src/modules/platform-core/   auth (adapter+provider local), workspaces, proyectos, roles, audit log
+src/modules/artifacts/       tipos Zod, máquina de estados, versiones inmutables, diff, dependencias
+src/modules/spec-os/         formularios tipados de las 6 secciones de spec
+src/modules/generator/       generación/regeneración parcial determinista, ownership manifest, git local
+src/modules/studio/          Visual Studio: registry Puck (espejo del template) + editor con ciclo §13
+src/modules/review/          releases inmutables, rondas por token, comentarios, client_approvals
+src/modules/deploy/          interfaz DeployProvider + provider local (builds inmutables, slots)
+src/modules/agents/          5 skills, runner, proveedores anthropic|openai|mock, BYOK, Project Context API
+src/ui/                      design system (tokens §11.4 + componentes)
+src/app/                     rutas App Router (las pantallas componen módulos; la lógica vive en módulos)
+templates/project-base/      template del proyecto generado (Next+Payload+Puck; contrato en su TEMPLATE.md)
+scripts/                     migrate, seed, e2e-*, smoke-*
 ```
 
-**Demo end-to-end:** con la demo sembrada, `npx tsx scripts/e2e-generator.ts` genera el proyecto demo, demuestra el ciclo de conflictos §18.2 (edición humana en zona codegen + campo bindeado eliminado por una v2 de `cms.collections` → `status=conflicts` → resolución → `success`) y deja el historial limpio. El contrato completo del template (ownership por archivo, comandos, decisiones) está en [`templates/project-base/TEMPLATE.md`](templates/project-base/TEMPLATE.md).
-
-## Studio y CMS (§7.4, §7.6, §11.2)
-
-El **Visual Studio** compone las páginas del sitemap aprobado con el registry gobernado de 34 componentes (sin CSS libre: toda opción visual es una variante enumerada). Cada página es un artefacto `page.composition` propio (key = path de la página) con el MISMO ciclo §13 que el resto de la spec: el Studio jamás crea un camino paralelo de aprobación.
-
-- **`/w/<slug>/p/<id>/studio`** — índice de páginas: estado por composición (StatusPill + flags), versión sellada, nº de secciones, peso del Data JSON, y el botón «Sincronizar páginas desde sitemap» (deriva un artefacto por página del sitemap APROBADO; marca huérfanas, nunca borra — §8.4).
-- **`/w/<slug>/p/<id>/studio/<página>`** — editor Puck (`@puckeditor/core`, misma versión pineada que el template): canvas con los tokens del proyecto inyectados en el iframe, preview responsive (375/768/1280), autosave de borrador con issues de validación Zod, diff estructural draft↔aprobada (las secciones se alinean por su `props.id` estable), bindings CMS validados contra `cms.collections` aprobado, y el panel «Aprobación» (enviar a revisión / aprobar / rechazar / revalidar — solo humanos con rol; aprobar sella versión inmutable y el canvas pasa a read-only).
-- **`/w/<slug>/p/<id>/cms`** — vista read-only del modelo de contenido aprobado + mapa de bindings (qué página/sección/prop consume qué colección/campo, con conflictos marcados) + cómo correr el CMS real del proyecto generado.
-
-**Compatibilidad de render (contrato sagrado):** el Data JSON que produce el Studio renderiza idéntico en el renderer del template — mismos nombres de componente, mismas props, mismo formato de bindings. La fuente de verdad del shape es `templates/project-base/src/puck/`; el espejo de plataforma vive en `src/modules/studio/registry` (reglas de sincronización en su `README.md`) y el contrato lo verifica `scripts/e2e-studio.ts` en cada ejecución.
-
-**Demo end-to-end del paso 4:** con la demo sembrada, `npx tsx scripts/e2e-studio.ts` añade una sección a la composición de «Servicios» tal y como la crearía el canvas (defaultProps del registry), muestra el diff, la aprueba (v2), regenera el proyecto, hace `seed + build + next start` DENTRO del proyecto generado y verifica con curl que `/servicios` sirve la sección nueva y `/` la composición aprobada de «inicio». Nota: cada ejecución de los e2e deja flags `outdated` legítimos (propagación §8.4 de las versiones que aprueban); para una demo impoluta, revalida desde el Cockpit o re-siembra desde cero.
-
-## Review de cliente y Deploy & Release (§7.7, §7.8, §8.5)
-
-El paso 5 cierra el ciclo: **release inmutable → deploy real → review del cliente sobre el deployment → rollback**. Una sola pipeline de render (§16): el cliente revisa el MISMO build que se despliega, embebido por iframe — nunca un render paralelo.
-
-**Releases (pantalla `/w/<slug>/p/<id>/deploy`):**
-
-1. El **checklist de release §7.8** se evalúa en vivo (5 validaciones automáticas: inputs del generator aprobados, todas las composiciones del sitemap aprobadas, cero bindings CMS rotos, generación al día, sin re-validaciones `outdated` pendientes).
-2. **Crear release** exige el checklist todo en verde + confirmación explícita de un humano con rol `admin|member` (§13: ningún deploy sin checklist confirmado). Un release es una **versión inmutable del artefacto `release`** sellada vía el ciclo normal de artifacts (origin humano, audit log) que congela las versiones selladas de cada input + el checklist evaluado, y tagea el repo generado (`release-N`).
-3. **Desplegar**: cada release sellado puede activarse en cualquiera de los dos slots. El **rollback** es desplegar el release anterior — sin estado extra.
-
-**Deploy local (interfaz `DeployProvider`):** el MVP resuelve §7.8 en local detrás de la interfaz provider-agnóstica `src/modules/deploy/provider.ts` (mismo patrón que el adapter de auth §18.6 — Vercel llegará detrás de la MISMA interfaz). El provider local construye un **build inmutable por release** (`git archive` del tag → `.data/deploys/<projectId>/builds/release-<N>/`, sellado con marker; jamás se reconstruye) y sirve los slots con `next start` detached + pidfile:
-
-| Slot         | URL                     | Env override          |
-| ------------ | ----------------------- | --------------------- |
-| `production` | `http://localhost:4100` | `DEPLOY_PROD_PORT`    |
-| `preview`    | `http://localhost:4200` | `DEPLOY_PREVIEW_PORT` |
-
-El estado de los slots se comprueba contra la REALIDAD (pid vivo + identidad del proceso + probe HTTP), no contra lo persistido; un puerto ocupado por un proceso ajeno es un error claro (`PORT_IN_USE`) y la plataforma **nunca** mata procesos que no arrancó. Cada deploy/stop registra filas en `deployments` + audit log.
-
-**Review del cliente (§7.7, §8.5):**
-
-- En `/w/<slug>/p/<id>/review` el equipo abre **rondas de review** sobre un release sellado; cada ronda emite un **link con token** (`/review/<token>`) que es la credencial completa del cliente (sin cuenta, R8: su identidad es la etiqueta del link + el nombre que escribe).
-- La página pública embebe el **deployment real** del slot preview por iframe, con las secciones de la composición sellada como anclas (`<section id="<blockId>">` — clic en la sidebar hace scroll en el sitio servido), hilos de comentarios anclados a página/sección y estados abierto/resuelto.
-- **Comentario de cliente abierto → tarea derivada** (§12.2) visible en el Cockpit; resolver el comentario la cierra (las tareas derivadas nunca mienten).
-- La **aprobación del cliente es un tipo distinto** (§8.5): filas en `client_approvals` ancladas a la ronda + versión de release. **Jamás** transiciona artefactos internos.
-
-**Demo end-to-end del paso 5:** con la demo sembrada (el seed deja el release v1 sellado y la ronda abierta, sin desplegar), `npx tsx scripts/e2e-deploy-review.ts` recorre todo con los servicios reales: checklist en verde → sella el siguiente release → build inmutable + deploy al slot preview → verifica que TODAS las páginas del release se sirven con sus anclas de sección → ronda nueva → comentario de cliente por token → tarea derivada → resolver → aprobación de cliente → cerrar ronda → **rollback** al release anterior → stop del slot y puertos libres. Mata todos los procesos que arranca (re-runnable; cada ejecución sella un release más).
-
-> Nota honesta sobre el template: la regeneración solo reescribe archivos owned-by-codegen; los archivos **estáticos copiados del template** (p.ej. `src/puck/*`) son territorio humano tras la copia inicial y NO se re-copian (§18.2). Un cambio de template llega a los repos ya generados re-creándolos (`scripts/e2e-studio.ts` lo hace con el repo demo) o portándolo con un commit humano dentro del repo generado; no existe aún una historia de producto de «upgrade de template».
-
-## Agentes: BYOK, asistente y agent runs (§7.9, §9)
-
-El paso 6 cierra el MVP: **un asistente contextual único** (§9.2 — sin "agentes persona") que invoca las **5 skills de la lista cerrada §9.3** (`generate-spec-draft`, `generate-cms-schema`, `write-page-copy`, `compose-page-draft`, `revise-artifact`) sobre el Project Context API (§9.4: solo versiones aprobadas + el draft del propio target).
-
-**La garantía §19, por construcción:** un agent run produce una **PROPUESTA** — el draft del artefacto objetivo (con puntero de provenance `proposedByRunId`) + validaciones + diff estructural — y se queda en `proposed` esperando. Ningún camino de código del módulo `agents` puede transicionar un artefacto a `approved` (hay un assert estático en los smokes que lo impone). La decisión es siempre de un humano con rol, vía las mismas server actions de artifacts de todo el producto: al **aprobar**, la versión sellada lleva `origin: "agent_run"` + el id del run (§8.3) y el run queda `approved` + `resultVersion` + `decidedBy`; al **rechazar**, el run guarda el feedback y el draft sigue editable. El usuario puede ignorar a la IA por completo y el flujo funciona igual (§13).
-
-**BYOK (§16):** cada workspace configura sus propias API keys en `/w/<slug>/settings` (solo admins). Las keys se **validan contra el proveedor antes de guardarse** (GET `/v1/models`), se cifran en reposo con **AES-256-GCM** (`node:crypto`; master key de la env `LLM_KEYS_SECRET` o, como fallback documentado, derivada de `AUTH_SECRET` con scrypt y salt fija) y **jamás** se loggean, viajan al cliente (solo id/etiqueta/últimos 4) ni llegan a los proyectos generados. Cada run registra la key **por referencia** (`keyRef`), nunca por valor; un 401 del proveedor marca la key en Settings y el run falla con detalle accionable.
-
-**Cómo poner una key real de Anthropic:** entra como admin en *Ajustes → Claves LLM (BYOK)* → «Añadir key», proveedor *Anthropic*, pega tu `sk-ant-…` (la plataforma la valida con la API antes de cifrarla). Desde ese momento el asistente ofrece Anthropic como proveedor (modelo por defecto `claude-sonnet-4-6`). Lo mismo aplica a OpenAI (`OPENAI_MODEL_ID` permite ajustar el modelo, por defecto `gpt-4o`).
-
-**Mock para demo/e2e:** el proveedor `mock` es de primera clase — determinista (mismo contexto ⇒ misma propuesta), produce payloads válidos en español por skill, no necesita key, no toca la red y cuesta $0. Toda la demo y los e2e corren offline con él. El seed deja una key mock simbólica («Proveedor de demostración») y **un run real en `proposed`** sobre «Nosotros» para que vivas la decisión humana al abrir la demo.
-
-**Dónde se ve:** el asistente se abre desde el Cockpit, el Spec OS y el Studio (panel lateral; el violeta `--accent-agent` es exclusivo de actividad de agentes, §11.4); `/w/<slug>/p/<id>/runs` es el **agent run log** del proyecto (skill@versión, target, proveedor/modelo, coste, estado) y `/runs/<runId>` la pantalla de decisión: contrato lee→escribe con las versiones EXACTAS leídas (§9.6), validaciones, diff estructural y los botones Aprobar/Rechazar/Abrir en editor.
-
-**Demo end-to-end del paso 6:** con la demo sembrada, `npx tsx scripts/e2e-agents.ts` recorre las 5 skills por el camino de producción con el mock (startRun → proposed → diff → aprobación humana → versión sellada con provenance), el reject con feedback, el fallo AUTH_FAILED con key falsa (fetch mockeado, escaneo de fugas del plaintext en DB/disk/salida) y el render del Data propuesto por `compose-page-draft` con el renderer del template; al final **restaura los payloads originales** (versiones nuevas — el historial es inmutable) y revalida los `outdated` que provocó, dejando la demo como estaba (re-runnable).
+Regla de dependencia: `app → modules → db`; los módulos no se importan entre sí salvo las excepciones documentadas. El mapa completo — con los límites exactos entre módulos, los contratos duplicados-sincronizados y las reglas que imponen los smokes — vive en [`CLAUDE.md`](CLAUDE.md), pensado como punto de entrada tanto para humanos como para coding agents.
 
 ## Postgres real
 
@@ -149,23 +133,20 @@ DATABASE_URL=postgres://user:pass@localhost:5432/agency_workstation
 
 Con la variable definida, `npm run db:migrate`, `npm run db:seed` y la app usan el driver `pg` contra esa base de datos. Ningún módulo importa el driver directamente: todo pasa por la factory `getDb()` de `src/db/client.ts`.
 
-## Comandos
+## Limitaciones honestas
 
-| Comando                               | Qué hace                                                         |
-| ------------------------------------- | ---------------------------------------------------------------- |
-| `npm run dev`                         | Dev server (http://localhost:3000)                               |
-| `npm run build`                       | Build de producción                                              |
-| `npm run db:migrate`                  | Aplica las migraciones SQL de `src/db/migrations`                |
-| `npm run db:seed`                     | Datos demo (idempotente)                                         |
-| `npm run lint`                        | ESLint                                                           |
-| `npx tsx scripts/e2e-generator.ts`    | Genera el proyecto demo + drill de conflictos §18.2 (re-runnable) |
-| `npx tsx scripts/e2e-studio.ts`       | Drill del paso 4: composición→diff→aprobación→regeneración→el sitio generado sirve el cambio (re-runnable) |
-| `npx tsx scripts/e2e-deploy-review.ts` | Drill del paso 5: decide propuestas pendientes→release→deploy(preview)→review por token→rollback→stop (re-runnable; mata todo lo que arranca) |
-| `npx tsx scripts/e2e-agents.ts`       | Drill del paso 6: las 5 skills con mock→proposed→diff→decisión humana→provenance, reject, AUTH_FAILED sin fugas; restaura la demo al final (re-runnable) |
-| `npx tsx scripts/smoke-agents-runtime.ts` | Smoke del runtime de agentes: crypto BYOK, keys, runner, retries (aislado, se limpia solo) |
-| `npx tsx scripts/smoke-skills.ts`     | Smoke de las 5 skills + provenance agent_run (aislado, se limpia solo) |
-| `npx tsx scripts/smoke-review.ts`     | Smoke del módulo review/release (aislado, se limpia solo)        |
-| `npx tsx scripts/smoke-deploy.ts`     | Smoke del DeployProvider local (usa el repo demo; slots 4100/4200 quedan libres) |
-| `npx tsx scripts/smoke-artifacts.ts`  | Smoke del dominio de artefactos                                  |
-| `npx tsx scripts/smoke-generator.ts`  | Smoke del módulo generator (aislado, se limpia solo)             |
-| `npx tsx src/modules/studio/registry/smoke-render.mts` | Smoke de render del registry del Studio (RSC)   |
+El MVP resuelve todo en local a propósito; los proveedores externos llegarán **detrás de adapters/interfaces que ya existen** (§18.6):
+
+- **Clerk** como proveedor de auth — detrás del mismo adapter que el provider local (`src/modules/platform-core/auth/adapter.ts`).
+- **Vercel** como DeployProvider real — detrás de la misma interfaz `src/modules/deploy/provider.ts` (el contrato de builds inmutables y status-contra-realidad ya está definido y ejercitado por el provider local).
+- **GitHub** (vía App) como hosting de los repos generados — hoy son repos git locales en `.data/projects/`, con la misma disciplina de commits descriptivos que prevé la spec.
+
+Además:
+
+- **Cierre de gates de fase**: el stepper marca «cerrable» pero no existe aún la acción de cierre con lock masivo + avance de `currentPhase`.
+- **Sin historia de upgrade de template** (§18.2): la regeneración solo reescribe archivos owned-by-codegen; los archivos estáticos copiados del template son territorio humano tras la copia inicial y no se re-copian. Un cambio de template llega a repos existentes re-creándolos o con un commit humano dentro del repo generado.
+- **Migraciones destructivas spec↔CMS** (§10.3) pendientes: hoy la regeneración detecta y reporta los conflictos de bindings como dato; no existe aún la migración con confirmación humana + preview de impacto sobre contenido existente.
+
+## Licencia
+
+MIT.
