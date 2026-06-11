@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "puck-spike",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "/Users/michelleai/MVPDMXTool/spikes/puck",
+      "port": 3000
+    }
+  ]
+}
