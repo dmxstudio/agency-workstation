@@ -21,7 +21,6 @@ import {
   getProjectArtifacts,
   type ProjectArtifact,
 } from "@/modules/artifacts/service";
-import { getGeneratedSiteUrl, getProjectRepoDir, hasManifest } from "@/modules/generator";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
 import { getProjectById } from "@/modules/platform-core/projects";
 import { getWorkspaceBySlug } from "@/modules/platform-core/workspaces";
@@ -33,6 +32,8 @@ import {
 } from "@/modules/studio/editor";
 import { getLatestRejectionFeedback } from "@/modules/studio/editor/queries";
 import { MonoId, StatusPill } from "@/ui";
+
+import { resolveLiveSiteUrl } from "../_lib/live-site-url";
 
 /**
  * Editor del Visual Studio (§7.4): UNA página del sitemap = UN artefacto
@@ -285,7 +286,7 @@ export default async function StudioPageEditorPage({
         initialDiff={diff}
         versionNumbers={history.versions.map((version) => version.version)}
         pagePath={pagePath}
-        siteUrl={hasManifest(getProjectRepoDir(projectId)) ? getGeneratedSiteUrl() : null}
+        siteUrl={(await resolveLiveSiteUrl(projectId))?.url ?? null}
         artifactHref={artifactHref}
         cmsArtifactHref={cmsArtifactHref}
       />

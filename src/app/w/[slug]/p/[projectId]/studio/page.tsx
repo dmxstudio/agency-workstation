@@ -9,7 +9,7 @@ import {
   type FlatPage,
   type ProjectArtifact,
 } from "@/modules/artifacts";
-import { getGeneratedSiteUrl, getProjectRepoDir, hasManifest } from "@/modules/generator";
+import { getProjectRepoDir, hasManifest } from "@/modules/generator";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
 import { getProjectById } from "@/modules/platform-core/projects";
 import { getWorkspaceBySlug } from "@/modules/platform-core/workspaces";
@@ -41,6 +41,7 @@ import {
   type CompositionData,
 } from "./_components/queries";
 import { SyncCompositionsButton } from "./_components/sync-button";
+import { LIVE_SITE_SOURCE_LABEL, resolveLiveSiteUrl } from "./_lib/live-site-url";
 
 /**
  * Índice del Visual Studio (§7.4): una fila por página del sitemap APROBADO
@@ -76,16 +77,16 @@ function sourceTitle(data: CompositionData): string | undefined {
   return undefined;
 }
 
-function ViewPageLink({ href }: { href: string }) {
+function ViewPageLink({ href, sourceLabel }: { href: string; sourceLabel: string }) {
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      title="Abre la página en el sitio generado local (sirve la última generación; requiere que el proyecto esté corriendo)"
+      title={`Abre la página servida ahora mismo desde ${sourceLabel} (${href})`}
       className="inline-flex items-center gap-1 text-xs font-medium text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
     >
-      Ver
+      Ver página
       <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
     </a>
   );
@@ -95,10 +96,12 @@ function CompositionCells({
   data,
   editorHref,
   viewHref,
+  viewSourceLabel,
 }: {
   data: CompositionData | null;
   editorHref: string | null;
   viewHref: string | null;
+  viewSourceLabel: string;
 }) {
   if (!data) {
     return (
@@ -111,7 +114,7 @@ function CompositionCells({
         <TableCell className="text-faint">—</TableCell>
         <TableCell>
           <span className="mr-3 text-xs text-faint">Sincroniza para crearlo</span>
-          {viewHref ? <ViewPageLink href={viewHref} /> : null}
+          {viewHref ? <ViewPageLink href={viewHref} sourceLabel={viewSourceLabel} /> : null}
         </TableCell>
       </>
     );
@@ -163,7 +166,7 @@ function CompositionCells({
           ) : (
             <span className="text-faint">—</span>
           )}
-          {viewHref ? <ViewPageLink href={viewHref} /> : null}
+          {viewHref ? <ViewPageLink href={viewHref} sourceLabel={viewSourceLabel} /> : null}
         </span>
       </TableCell>
     </>
@@ -199,10 +202,12 @@ export default async function StudioIndexPage({
   );
   const sitemapApproved = sitemapItem != null && isApproved(sitemapItem);
 
-  // Enlaces "Ver": solo si existe una generación; el sitio sirve la última
-  // generación corrida (no el borrador del Studio) en el puerto local del
-  // proyecto generado.
-  const siteUrl = hasManifest(getProjectRepoDir(projectId)) ? getGeneratedSiteUrl() : null;
+  // Enlaces "Ver": apuntan a donde el sitio está sirviendo AHORA (producción →
+  // preview → dev server, sondeando realidad). Null = nada corriendo: no se
+  // pintan enlaces muertos.
+  const generated = hasManifest(getProjectRepoDir(projectId));
+  const liveSite = await resolveLiveSiteUrl(projectId);
+  const viewSourceLabel = liveSite ? LIVE_SITE_SOURCE_LABEL[liveSite.source] : "";
 
   // --- Sin sitemap aprobado: el Studio no tiene de qué derivar páginas -----
   if (!sitemapItem || !sitemapApproved) {
@@ -273,17 +278,28 @@ export default async function StudioIndexPage({
               sitemap v{sitemapItem.artifact.currentVersion}
             </span>
             <MonoId id={projectId} />
-            {siteUrl ? (
+            {liveSite ? (
               <a
-                href={siteUrl}
+                href={liveSite.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Abre el sitio generado local (sirve la última generación; requiere que el proyecto esté corriendo)"
+                title={`Sirviendo desde ${viewSourceLabel} (${liveSite.url})`}
                 className="inline-flex items-center gap-1 text-xs font-medium text-accent-action underline-offset-2 hover:underline"
               >
                 Ver sitio
                 <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
+                <span className="font-mono text-[10px] text-muted">{viewSourceLabel}</span>
               </a>
+            ) : generated ? (
+              <span className="text-xs text-faint">
+                sitio no corriendo —{" "}
+                <Link
+                  href={`${basePath}/deploy`}
+                  className="text-muted underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  despliega un release
+                </Link>
+              </span>
             ) : null}
           </>
         }
@@ -352,7 +368,8 @@ export default async function StudioIndexPage({
                     <CompositionCells
                       data={data}
                       editorHref={data ? `${basePath}/studio/${data.key}` : null}
-                      viewHref={siteUrl ? `${siteUrl}${page.path}` : null}
+                      viewHref={liveSite ? `${liveSite.url}${page.path}` : null}
+                      viewSourceLabel={viewSourceLabel}
                     />
                   </TableRow>
                 );
