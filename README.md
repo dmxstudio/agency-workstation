@@ -15,6 +15,15 @@ What makes it technically interesting:
 
 > **Docs are in Spanish** (the product's working language); the architecture map in [`CLAUDE.md`](CLAUDE.md) is the best starting point for both humans and coding agents. The full product spec is [`docs/product-spec-v1.2.md`](docs/product-spec-v1.2.md).
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Project Cockpit](docs/screenshots/cockpit.png) **Project Cockpit** — phase gates, artifact states (an artifact can be `approved` *and* `outdated` at once), derived tasks and the audit-backed activity feed. | ![Visual Studio editor](docs/screenshots/studio-editor.png) **Visual Studio** — Puck canvas over a `page.composition` artifact rendering with the project's own design tokens; the approval cycle lives in the left rail. |
+| ![Studio pages](docs/screenshots/studio-pages.png) **Studio index** — one composition artifact per approved-sitemap page, each with its sealed version, section count and state. | ![Assistant](docs/screenshots/assistant-skills.png) **The single contextual assistant** — five closed-list skills, each showing its §9.1 contract. Violet is reserved exclusively for agent activity. |
+
+<p align="center"><img src="docs/screenshots/assistant-model-cost.png" width="48%" alt="Skill launch form"><br><em>Launching a skill: what it reads → what it writes (always as a proposal), per-invocation model selector with live cost-per-MTok, and the BYOK key referenced by label + last4 — never by value.</em></p>
+
 ---
 
 ## Estado
