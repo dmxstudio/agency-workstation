@@ -3,17 +3,16 @@ import { redirect } from "next/navigation";
 import { getAuthUser, getSessionUser } from "@/modules/platform-core/auth/adapter";
 
 /**
- * `/` never renders UI: the proxy already redirects optimistically by cookie
- * presence, and this page settles the rest with a real session check
- * (defense in depth — the proxy is not an auth layer).
+ * Resolver de `/w` (contrato de rutas): nunca renderiza UI. El proxy manda
+ * aquí a quien tiene cookie; esta página resuelve el destino con la sesión
+ * real — workspace activo, onboarding si aún no pertenece a ninguno, o login.
  */
-export default async function Home() {
+export default async function WorkspaceResolverPage() {
   const sessionUser = await getSessionUser();
   if (sessionUser) redirect(`/w/${sessionUser.workspaceSlug}`);
 
-  // Authenticated but without a workspace yet → onboarding.
   const authUser = await getAuthUser();
   if (authUser) redirect("/onboarding");
 
-  redirect("/login");
+  redirect("/login?next=/w");
 }

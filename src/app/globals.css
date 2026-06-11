@@ -1,26 +1,118 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * Design system de plataforma — direccion "Editorial Engineering" (§11.4).
+ * Tema oscuro por defecto (hero theme); tema claro via clase `.light` en <html>.
+ * La variante `dark:` se redefine para seguir la clase, no el media query.
+ */
+@custom-variant dark (&:where(:not(.light, .light *)));
+
+@theme {
+  /*
+   * Lint de diseño (§11.4): la paleta por defecto de Tailwind se elimina.
+   * Solo existen los tokens definidos abajo — cualquier `bg-red-500` etc.
+   * simplemente no genera CSS.
+   */
+  --color-*: initial;
+
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  /* Escala monocromatica neutra (negro profundo -> blanco calido) */
+  --color-ink-950: #0b0b0c;
+  --color-ink-900: #121214;
+  --color-ink-850: #18181b;
+  --color-ink-800: #202024;
+  --color-ink-700: #2a2a2f;
+  --color-ink-600: #3a3a41;
+  --color-ink-500: #55555e;
+  --color-ink-400: #75757f;
+  --color-ink-300: #9b9ba3;
+  --color-ink-200: #c4c4ca;
+  --color-ink-100: #e4e4e6;
+  --color-ink-50: #f1f1ef;
+  --color-paper: #fafaf7;
 }
 
 @theme inline {
+  /* Tokens semanticos dependientes de tema (resuelven a :root / .light) */
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  /* Acentos semanticos — un significado por color, sin uso decorativo */
+  --color-accent-action: var(--accent-action); /* azul electrico: accion / foco */
+  --color-accent-success: var(--accent-success); /* verde-lima: aprobado / exito */
+  --color-accent-warning: var(--accent-warning); /* ambar: outdated / warning */
+  --color-accent-danger: var(--accent-danger); /* rojo-rose: rechazado / error */
+  --color-accent-agent: var(--accent-agent); /* violeta: EXCLUSIVO actividad de agentes IA */
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Hero theme: oscuro (default) */
+:root {
+  color-scheme: dark;
+
+  --background: var(--color-ink-950);
+  --surface: var(--color-ink-900);
+  --surface-raised: var(--color-ink-850);
+  --foreground: var(--color-paper);
+  --muted: var(--color-ink-300);
+  --faint: var(--color-ink-400);
+  --border: var(--color-ink-800);
+  --border-strong: var(--color-ink-600);
+
+  --accent-action: #3d7bfd;
+  --accent-success: #a3e635;
+  --accent-warning: #f5a623;
+  --accent-danger: #fb7185;
+  --accent-agent: #a78bfa;
+}
+
+/* Tema claro: clase .light en <html> */
+.light {
+  color-scheme: light;
+
+  --background: var(--color-paper);
+  --surface: #ffffff;
+  --surface-raised: var(--color-ink-50);
+  --foreground: var(--color-ink-950);
+  --muted: var(--color-ink-500);
+  --faint: var(--color-ink-400);
+  --border: var(--color-ink-100);
+  --border-strong: var(--color-ink-300);
+
+  --accent-action: #2563eb;
+  --accent-success: #65a30d;
+  --accent-warning: #b45309;
+  --accent-danger: #e11d48;
+  --accent-agent: #7c3aed;
+}
+
+@layer base {
+  /* Bordes de 1px omnipresentes: color por defecto = token border */
+  *,
+  ::before,
+  ::after,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--border);
   }
-}
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--accent-action) 30%, transparent);
+  }
 }
