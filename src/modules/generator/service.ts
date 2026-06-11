@@ -15,6 +15,7 @@ import {
 import {
   getArtifactType,
   getProjectArtifacts,
+  pageCompositionDefinition,
   type ArtifactTypeKey,
   type ProjectArtifact,
 } from "@/modules/artifacts";
@@ -113,12 +114,48 @@ function isApproved(item: ProjectArtifact | undefined): boolean {
 }
 
 function buildRequirements(items: ProjectArtifact[]): GenerationRequirement[] {
-  const byType = new Map(items.map((item) => [item.artifact.type, item]));
+  const byType = new Map<string, ProjectArtifact[]>();
+  for (const item of items) {
+    const list = byType.get(item.artifact.type) ?? [];
+    list.push(item);
+    byType.set(item.artifact.type, list);
+  }
+
   return GENERATION_INPUT_TYPES.map(({ type, required }) => {
-    const item = byType.get(type);
+    const definition = getArtifactType(type);
+    const instances = byType.get(type) ?? [];
+
+    if (definition.multiInstance) {
+      // page.composition: aggregate over the keyed per-page instances.
+      const approvedCount = instances.filter((item) => isApproved(item)).length;
+      const status =
+        instances.length === 0
+          ? "empty"
+          : approvedCount === instances.length
+            ? "approved"
+            : instances.some((item) => item.artifact.status === "in_review")
+              ? "in_review"
+              : "draft";
+      return {
+        type,
+        label:
+          instances.length === 0
+            ? `${definition.label}s (sin sincronizar del sitemap)`
+            : `${definition.label}s (${approvedCount}/${instances.length} aprobadas)`,
+        status,
+        outdated: instances.some((item) => item.artifact.outdated),
+        required,
+        // Optional input: any approved composition already enriches the seed.
+        ok: approvedCount > 0,
+        artifactId: null,
+        currentVersion: 0,
+      };
+    }
+
+    const item = instances[0];
     return {
       type,
-      label: item?.label ?? getArtifactType(type).label,
+      label: item?.label ?? definition.label,
       status: item?.artifact.status ?? "empty",
       outdated: item?.artifact.outdated ?? false,
       required,
@@ -187,8 +224,10 @@ async function loadApprovedPayload<T>(db: Db, item: ProjectArtifact): Promise<T>
 
 interface LoadedInput {
   input: GeneratorInput;
-  /** Sealed version per input type actually consumed, for traceability. */
+  /** Sealed version per singleton input type actually consumed. */
   inputVersions: Partial<Record<ArtifactTypeKey, number>>;
+  /** Sealed version per consumed `page.composition` instance, keyed by page. */
+  compositionVersions: Record<string, number>;
   requirements: GenerationRequirement[];
 }
 
@@ -208,7 +247,9 @@ async function loadGeneratorInput(
     );
   }
 
-  const byType = new Map(items.map((item) => [item.artifact.type, item]));
+  const byType = new Map(
+    items.filter((item) => item.artifact.key == null).map((item) => [item.artifact.type, item]),
+  );
   const inputVersions: Partial<Record<ArtifactTypeKey, number>> = {};
 
   const pick = (type: ArtifactTypeKey): ProjectArtifact => {
@@ -235,17 +276,33 @@ async function loadGeneratorInput(
     ? await loadApprovedPayload<NonNullable<GeneratorInput["content"]>>(db, pick("content.page"))
     : null;
 
-  const compositionsItem = byType.get("page.composition");
-  const compositions = isApproved(compositionsItem)
-    ? await loadApprovedPayload<NonNullable<GeneratorInput["compositions"]>>(
-        db,
-        pick("page.composition"),
-      )
-    : null;
+  // Per-page compositions: APPROVED keyed instances only. Instances sealed
+  // under the legacy 1.0 schema are skipped (their pages fall back to the
+  // content.page scaffold) — the migration task asks a human to re-author
+  // them; the generator never converts payloads on its own.
+  const compositions: GeneratorInput["compositions"] = {};
+  const compositionVersions: Record<string, number> = {};
+  const compositionItems = items
+    .filter(
+      (item) =>
+        item.artifact.type === pageCompositionDefinition.type && item.artifact.key != null,
+    )
+    .sort((a, b) => (a.artifact.key ?? "").localeCompare(b.artifact.key ?? ""));
+  for (const item of compositionItems) {
+    if (!isApproved(item)) continue;
+    if (item.artifact.schemaVersion !== pageCompositionDefinition.schemaVersion) continue;
+    const key = item.artifact.key as string;
+    compositions[key] = await loadApprovedPayload<GeneratorInput["compositions"][string]>(
+      db,
+      item,
+    );
+    compositionVersions[key] = item.artifact.currentVersion;
+  }
 
   return {
     input: { projectName: project.name, sitemap, collections, tokens, content, compositions },
     inputVersions,
+    compositionVersions,
     requirements,
   };
 }
@@ -262,8 +319,14 @@ export interface GenerationSummary {
   skipped: string[];
   deletedOrphans: string[];
   conflicts: Conflict[];
-  /** Sealed artifact version per input type consumed by this run. */
+  /** Sealed artifact version per singleton input type consumed by this run. */
   inputVersions: Partial<Record<ArtifactTypeKey, number>>;
+  /**
+   * Sealed version per consumed `page.composition` instance, keyed by page
+   * path. Absent/empty when no per-page composition was approved (runs
+   * recorded before the multi-composition model also lack it).
+   */
+  compositionVersions?: Record<string, number>;
   /** Commit hash created by this run; null when nothing changed. */
   commit: string | null;
 }
@@ -276,6 +339,7 @@ export interface GenerationResult {
 
 function emptySummary(
   inputVersions: Partial<Record<ArtifactTypeKey, number>> = {},
+  compositionVersions: Record<string, number> = {},
 ): GenerationSummary {
   return {
     written: [],
@@ -285,6 +349,7 @@ function emptySummary(
     deletedOrphans: [],
     conflicts: [],
     inputVersions,
+    compositionVersions,
     commit: null,
   };
 }
@@ -344,10 +409,14 @@ async function recordGeneration(
 
 function describeInputVersions(
   inputVersions: Partial<Record<ArtifactTypeKey, number>>,
+  compositionVersions: Record<string, number> = {},
 ): string {
-  return Object.entries(inputVersions)
-    .map(([type, version]) => `${type} v${version}`)
-    .join(", ");
+  return [
+    ...Object.entries(inputVersions).map(([type, version]) => `${type} v${version}`),
+    ...Object.entries(compositionVersions).map(
+      ([key, version]) => `page.composition[${key}] v${version}`,
+    ),
+  ].join(", ");
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +435,7 @@ export async function generateProject(
   assertEditor(actor, "generar el proyecto");
   const db = getDb();
   const project = await loadProject(db, projectId, actor);
-  const { input, inputVersions } = await loadGeneratorInput(db, project);
+  const { input, inputVersions, compositionVersions } = await loadGeneratorInput(db, project);
 
   const repoDir = getProjectRepoDir(projectId);
   if (hasManifest(repoDir)) {
@@ -383,11 +452,11 @@ export async function generateProject(
     await gitStageAll(repoDir);
     const commit = await gitCommit(
       repoDir,
-      `generate: initial project from approved artifacts (${describeInputVersions(inputVersions)})`,
+      `generate: initial project from approved artifacts (${describeInputVersions(inputVersions, compositionVersions)})`,
     );
 
     const summary: GenerationSummary = {
-      ...emptySummary(inputVersions),
+      ...emptySummary(inputVersions, compositionVersions),
       created: [...result.codegenFiles, ...result.humanFiles, MANIFEST_FILENAME].sort(),
       conflicts: result.conflicts,
       commit,
@@ -403,7 +472,7 @@ export async function generateProject(
       actor,
       "generate",
       "error",
-      emptySummary(inputVersions),
+      emptySummary(inputVersions, compositionVersions),
       message,
     );
     throw error;
@@ -427,7 +496,7 @@ export async function regenerateProject(
   assertEditor(actor, "regenerar el proyecto");
   const db = getDb();
   const project = await loadProject(db, projectId, actor);
-  const { input, inputVersions } = await loadGeneratorInput(db, project);
+  const { input, inputVersions, compositionVersions } = await loadGeneratorInput(db, project);
 
   const repoDir = getProjectRepoDir(projectId);
   if (!hasManifest(repoDir)) {
@@ -440,7 +509,7 @@ export async function regenerateProject(
   try {
     const result = engineRegenerate(input, repoDir);
 
-    const commit = await commitRegeneration(repoDir, result, inputVersions);
+    const commit = await commitRegeneration(repoDir, result, inputVersions, compositionVersions);
 
     const summary: GenerationSummary = {
       written: result.written,
@@ -450,6 +519,7 @@ export async function regenerateProject(
       deletedOrphans: result.deletedOrphans,
       conflicts: result.conflicts,
       inputVersions,
+      compositionVersions,
       commit,
     };
     const status: GenerationStatus = result.conflicts.length > 0 ? "conflicts" : "success";
@@ -471,7 +541,7 @@ export async function regenerateProject(
       actor,
       "regenerate",
       "error",
-      emptySummary(inputVersions),
+      emptySummary(inputVersions, compositionVersions),
       message,
     );
     throw error;
@@ -483,6 +553,7 @@ async function commitRegeneration(
   repoDir: string,
   result: EngineRegenerateResult,
   inputVersions: Partial<Record<ArtifactTypeKey, number>>,
+  compositionVersions: Record<string, number>,
 ): Promise<string | null> {
   const changedPaths = [...result.written, ...result.created, ...result.deletedOrphans];
   if (changedPaths.length === 0) return null;
@@ -499,7 +570,7 @@ async function commitRegeneration(
   }
   return gitCommit(
     repoDir,
-    `regenerate: ${describeInputVersions(inputVersions)} — ${parts.join(", ")}`,
+    `regenerate: ${describeInputVersions(inputVersions, compositionVersions)} — ${parts.join(", ")}`,
   );
 }
 

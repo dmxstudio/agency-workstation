@@ -25,6 +25,8 @@ import { getDb } from "../src/db/client";
 import { newId } from "../src/db/ids";
 import {
   artifactDependencies,
+  artifactVersions,
+  artifacts,
   auditLog,
   projects,
   tasks,
@@ -48,8 +50,10 @@ import {
   revalidate,
   saveDraft,
   submitForReview,
+  syncCompositionArtifacts,
   type HumanActor,
 } from "../src/modules/artifacts/service";
+import type { PageCompositionPayload } from "../src/modules/artifacts/types/page-composition";
 
 let passed = 0;
 
@@ -123,26 +127,43 @@ async function main(): Promise<void> {
     // -----------------------------------------------------------------------
     console.log("\n# ensureProjectArtifacts — grafo MVP instanciado");
     const created = await ensureProjectArtifacts(projectId, admin);
-    assert(created.length === 8, "crea los 8 artefactos del grafo MVP");
     assert(
-      created.every((a) => a.status === "empty" && a.currentVersion === 0),
-      "todos nacen en estado empty, version 0",
+      created.length === 7,
+      "crea los 7 artefactos singleton (page.composition es multi-instancia y se deriva del sitemap)",
+    );
+    assert(
+      created.every((a) => a.type !== "page.composition"),
+      "no instancia page.composition como singleton",
+    );
+    assert(
+      created.every((a) => a.status === "empty" && a.currentVersion === 0 && a.key === null),
+      "todos nacen en estado empty, version 0, sin key",
     );
     const again = await ensureProjectArtifacts(projectId, admin);
-    assert(again.length === 8, "es idempotente (segunda llamada → siguen siendo 8)");
+    assert(again.length === 7, "es idempotente (segunda llamada → siguen siendo 7)");
 
     const ids = created.map((a) => a.id);
     const edges = await db
       .select()
       .from(artifactDependencies)
       .where(inArray(artifactDependencies.fromArtifactId, ids));
-    assert(edges.length === 7, "instancia las 7 aristas del grafo fijo (§8.4)");
+    assert(
+      edges.length === 3,
+      "instancia las 3 aristas entre singletons (§8.4); las de page.* llegan con el sync",
+    );
 
     const byType = new Map(created.map((a) => [a.type, a]));
     const intake = byType.get("spec.intake")!;
     const strategy = byType.get("spec.strategy")!;
     const sitemap = byType.get("spec.sitemap")!;
     const contentPage = byType.get("content.page")!;
+    const release = byType.get("release")!;
+
+    await expectDomainError(
+      () => syncCompositionArtifacts(projectId, admin),
+      "SITEMAP_NOT_APPROVED",
+      "sync de composiciones sin sitemap aprobado falla",
+    );
 
     // -----------------------------------------------------------------------
     console.log("\n# saveDraft — validación Zod en cada escritura");
@@ -332,6 +353,129 @@ async function main(): Promise<void> {
     );
 
     // -----------------------------------------------------------------------
+    console.log("\n# syncCompositionArtifacts — composiciones por página (§7.4)");
+    // Sitemap aprobado: home, servicios (+ hija consultoria), contacto.
+    const sync1 = await syncCompositionArtifacts(projectId, admin);
+    assert(
+      sync1.created.length === 4 && sync1.compositions.length === 4,
+      "sitemap aprobado (4 páginas) → 4 artefactos page.composition",
+    );
+    assert(
+      sync1.created
+        .map((a) => a.key)
+        .sort()
+        .join(",") === "contacto,home,servicios,servicios/consultoria",
+      "keys = paths de página (anidadas incluidas: servicios/consultoria)",
+    );
+    assert(
+      sync1.created.every((a) => a.status === "empty" && a.type === "page.composition"),
+      "todas nacen empty con tipo page.composition",
+    );
+    const consultoriaComp = sync1.compositions.find((a) => a.key === "servicios/consultoria")!;
+    assert(
+      consultoriaComp.label === "Composición: Consultoría",
+      'label humano "Composición: <título>"',
+    );
+    const compEdges = await db
+      .select()
+      .from(artifactDependencies)
+      .where(eq(artifactDependencies.fromArtifactId, consultoriaComp.id));
+    assert(
+      compEdges.length === 3,
+      "aristas §8.4 por instancia: sitemap/cms/tokens → page.composition",
+    );
+    const releaseEdges = await db
+      .select()
+      .from(artifactDependencies)
+      .where(
+        and(
+          eq(artifactDependencies.fromArtifactId, release.id),
+          eq(artifactDependencies.toArtifactId, consultoriaComp.id),
+        ),
+      );
+    assert(releaseEdges.length === 1, "arista §8.4: page.composition → release");
+
+    const sync2 = await syncCompositionArtifacts(projectId, admin);
+    assert(
+      sync2.created.length === 0 && sync2.orphaned.length === 0,
+      "el sync es idempotente (segunda llamada → 0 creadas, 0 huérfanas)",
+    );
+
+    // Ciclo §13 sobre UNA composición (payload = Data de Puck del template).
+    const serviciosComp = sync1.compositions.find((a) => a.key === "servicios")!;
+    const serviciosData: PageCompositionPayload = {
+      root: { props: { title: "Servicios", description: "Página de servicios" } },
+      content: [
+        {
+          type: "Hero",
+          props: { id: "hero-servicios", title: "Servicios", tone: "light" },
+        },
+      ],
+      zones: {},
+    };
+    await expectDomainError(
+      () => saveDraft(serviciosComp.id, { pages: [] }, admin),
+      "VALIDATION_FAILED",
+      "el payload legado { pages: [] } ya NO valida (schema v2 = Data de Puck)",
+    );
+    await saveDraft(serviciosComp.id, serviciosData, admin);
+    await submitForReview(serviciosComp.id, admin);
+    const compApproved = await approve(serviciosComp.id, admin, "Composición de servicios OK");
+    assert(
+      compApproved.artifact.currentVersion === 1 && compApproved.artifact.key === "servicios",
+      "la composición keyed se aprueba con el MISMO ciclo §13 (versión inmutable v1)",
+    );
+
+    // Página eliminada del sitemap → la composición se MARCA, nunca se borra.
+    const sitemapV2 = {
+      ...sitemapPayload2,
+      pages: sitemapPayload2.pages.map((page) =>
+        page.slug === "servicios" ? { ...page, children: [] } : page,
+      ),
+    };
+    await saveDraft(sitemap.id, sitemapV2, admin);
+    await submitForReview(sitemap.id, admin);
+    await approve(sitemap.id, admin, "IA v2: consultoría se fusiona en servicios");
+    const sync3 = await syncCompositionArtifacts(projectId, admin);
+    assert(
+      sync3.created.length === 0 &&
+        sync3.orphaned.length === 1 &&
+        sync3.orphaned[0].id === consultoriaComp.id,
+      "página fuera del sitemap → SOLO esa composición queda huérfana",
+    );
+    const orphanRows = await getProjectArtifacts(projectId);
+    const orphan = orphanRows.find((item) => item.artifact.id === consultoriaComp.id)!;
+    assert(
+      orphan.artifact.outdated && orphan.artifact.deletedAt === null,
+      "la huérfana se marca outdated y NO se borra (marca, nunca destruye §8.4)",
+    );
+    const orphanTask = await db
+      .select()
+      .from(tasks)
+      .where(
+        and(eq(tasks.dedupeKey, `outdated:${consultoriaComp.id}`), isNull(tasks.deletedAt)),
+      );
+    assert(
+      orphanTask.length === 1 &&
+        orphanTask[0].status === "open" &&
+        orphanTask[0].title.includes("fuera del sitemap"),
+      'tarea derivada "página fuera del sitemap" abierta',
+    );
+    const serviciosAfterSitemapV2 = orphanRows.find(
+      (item) => item.artifact.id === serviciosComp.id,
+    )!;
+    assert(
+      serviciosAfterSitemapV2.artifact.outdated &&
+        serviciosAfterSitemapV2.artifact.status === "approved",
+      "la composición con contenido queda approved+outdated por la propagación del sitemap v2",
+    );
+    assert(
+      serviciosAfterSitemapV2.label === "Composición: Servicios",
+      "el listado del proyecto usa el label por instancia",
+    );
+    await revalidate(serviciosComp.id, admin); // deja servicios limpio para los gates
+
+    // -----------------------------------------------------------------------
     console.log("\n# revalidate — revalidar sin cambios (§17-R6)");
     const revalidated = await revalidate(strategy.id, admin);
     assert(!revalidated.outdated, "revalidate limpia outdated sin tocar contenido");
@@ -421,6 +565,73 @@ async function main(): Promise<void> {
     assert(
       nested.length === 1 && nested[0].path === "a.b" && nested[0].type === "added",
       "subárbol añadido → un único cambio con el subárbol completo",
+    );
+
+    // -----------------------------------------------------------------------
+    console.log("\n# Migración del singleton legado page.composition (pre multi-instancia)");
+    // Proyecto que simula una DB seedeada ANTES del modelo keyed: un artefacto
+    // page.composition sin key, approved v1 con el payload legado 1.0.
+    const legacyProjectId = newId.project();
+    await db
+      .insert(projects)
+      .values({ id: legacyProjectId, workspaceId, name: "Smoke Legacy Composition" });
+    const legacyArts = await ensureProjectArtifacts(legacyProjectId, admin);
+    const legacySitemap = legacyArts.find((a) => a.type === "spec.sitemap")!;
+    const legacyRows = await db
+      .insert(artifacts)
+      .values({
+        id: newId.artifact(),
+        projectId: legacyProjectId,
+        type: "page.composition",
+        schemaVersion: "1.0",
+        status: "approved",
+        currentVersion: 1,
+      })
+      .returning();
+    const legacySingleton = legacyRows[0];
+    await db.insert(artifactVersions).values({
+      id: newId.artifactVersion(),
+      artifactId: legacySingleton.id,
+      version: 1,
+      payload: { pages: [{ slug: "home", sections: [] }] },
+      origin: "human",
+      authorId: adminId,
+    });
+
+    await saveDraft(legacySitemap.id, sitemapPayload, admin);
+    await submitForReview(legacySitemap.id, admin);
+    await approve(legacySitemap.id, admin);
+    const legacySync = await syncCompositionArtifacts(legacyProjectId, admin);
+    assert(
+      legacySync.migratedLegacyId === legacySingleton.id,
+      "el singleton legado migra su rol en el primer sync",
+    );
+    const migrated = legacySync.compositions.find((a) => a.id === legacySingleton.id)!;
+    assert(
+      migrated.key === "home" && migrated.label === "Composición: Home",
+      "pasa a ser la composición de la HOME (key + label)",
+    );
+    assert(
+      migrated.outdated && migrated.status === "approved" && migrated.currentVersion === 1,
+      "su contenido legado (schema 1.0) se MARCA outdated; las versiones selladas no se tocan",
+    );
+    const migrationTask = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.dedupeKey, `outdated:${legacySingleton.id}`), isNull(tasks.deletedAt)));
+    assert(
+      migrationTask.length === 1 &&
+        migrationTask[0].status === "open" &&
+        migrationTask[0].title.includes("Migrar"),
+      "tarea derivada de migración al esquema v2 abierta",
+    );
+    assert(
+      legacySync.created.length === 2 &&
+        legacySync.created
+          .map((a) => a.key)
+          .sort()
+          .join(",") === "servicios,servicios/consultoria",
+      "las demás páginas del sitemap se crean keyed (la home ya la cubre el legado)",
     );
 
     console.log(`\nSMOKE OK — ${passed} asserts superados.`);

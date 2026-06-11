@@ -3,7 +3,13 @@
  *
  * Prerequisites: `npm run db:migrate && npm run db:seed` (the seed leaves the
  * demo project "Sitio Corporativo Acme" with the three required artifacts
- * approved). Run with: `npx tsx scripts/e2e-generator.ts`.
+ * approved + the per-page `page.composition` artifacts synced from the
+ * sitemap: `inicio` and `servicios` approved as Puck Data, `nosotros` with an
+ * unapproved draft). Run with: `npx tsx scripts/e2e-generator.ts`.
+ *
+ * NOTE: demo databases seeded BEFORE the multi-composition model (legacy
+ * keyless `page.composition`) must be recreated: delete `./.data/pglite` and
+ * re-run migrate + seed (the seed is the documented way to rebuild the demo).
  *
  * What it does, in order (same service calls the UI buttons make):
  *  1. generateProject  → git repo in `.data/projects/<projectId>/` with the
@@ -66,9 +72,17 @@ const DEMO_PROJECT_NAME = "Sitio Corporativo Acme";
 
 /** Codegen file the drill edits by hand (must exist in the demo collections). */
 const HAND_EDITED_FILE = "src/collections/job-openings.ts";
-/** Bound field removed in v2 → `binding-missing-field` (seeded composition). */
+/**
+ * Bound field removed in v2 → `binding-missing-field`. The binding lives in
+ * the seeded `page.composition[servicios]` artifact (Puck Data): the
+ * `ImageText` block `caso-destacado` carries a live ref to `case-studies`
+ * whose snapshot copies `summary` (see scripts/seed.ts).
+ */
 const BOUND_COLLECTION = "case-studies";
 const BOUND_FIELD = "summary";
+const BOUND_PAGE = "servicios";
+const BOUND_SECTION_ID = "caso-destacado";
+const BOUND_PROP = "source";
 
 let passed = 0;
 function assert(condition: boolean, label: string): void {
@@ -153,10 +167,39 @@ async function main(): Promise<void> {
   assert(pkg.name === "sitio-corporativo-acme", "package.json#name = slug del proyecto");
   const seedJson = JSON.parse(
     readFileSync(path.join(repoDir, "src/seed/content.json"), "utf8"),
-  ) as { collections: Record<string, unknown[]>; pages: { path: string }[] };
+  ) as {
+    collections: Record<string, unknown[]>;
+    pages: { path: string; content: { type: string; props: Record<string, unknown> }[] }[];
+  };
   assert(
     Object.keys(seedJson.collections).length === 3 && seedJson.pages.length === 6,
     "content.json: 3 colecciones con fixtures + 6 páginas compuestas",
+  );
+  const serviciosSeedPage = seedJson.pages.find((page) => page.path === BOUND_PAGE);
+  assert(
+    serviciosSeedPage != null &&
+      serviciosSeedPage.content.some(
+        (block) =>
+          block.type === "TestimonialQuote" &&
+          JSON.stringify(block.props.testimonial).includes("$seedRef"),
+      ),
+    "la página «servicios» del seed proviene del artefacto page.composition[servicios] (Data de Puck con $seedRef)",
+  );
+  // «nosotros» tiene un BORRADOR sin aprobar: el generator solo consume
+  // versiones selladas, así que la página cae al scaffold (sin copy aprobado
+  // para nosotros → HeroMinimal) y el borrador no se filtra al repo.
+  const fallbackSeedPage = seedJson.pages.find((page) => page.path === "nosotros");
+  assert(
+    fallbackSeedPage != null &&
+      fallbackSeedPage.content.some((block) => block.type === "HeroMinimal") &&
+      !fallbackSeedPage.content.some((block) => block.props.id === "ImageText-nosotros-planta"),
+    "las páginas sin composición aprobada usan el scaffold (el borrador de «nosotros» NO se consume)",
+  );
+  assert(
+    gen.summary.compositionVersions?.inicio === 1 &&
+      gen.summary.compositionVersions?.servicios != null &&
+      Object.keys(gen.summary.compositionVersions ?? {}).length === 2,
+    "el resumen registra las composiciones selladas consumidas (inicio + servicios)",
   );
   const log1 = await gitLog(repoDir);
   assert(log1.length === 1 && log1[0].includes("generate: initial project"), "git log: commit inicial descriptivo");
@@ -223,16 +266,18 @@ async function main(): Promise<void> {
     readFileSync(editedPath, "utf8").includes("hack manual"),
     "el archivo editado a mano queda intacto (no se sobrescribe)",
   );
-  const bindingConflict = regen1.summary.conflicts.find((c) => c.kind === "binding-missing-field");
+  const bindingConflicts = regen1.summary.conflicts.filter(
+    (c) => c.kind === "binding-missing-field",
+  );
   assert(
-    bindingConflict != null &&
-      bindingConflict.kind === "binding-missing-field" &&
-      bindingConflict.page === "servicios" &&
-      bindingConflict.sectionId === "caso-destacado" &&
-      bindingConflict.prop === "body" &&
-      bindingConflict.collection === BOUND_COLLECTION &&
-      bindingConflict.field === BOUND_FIELD,
-    "conflicto binding-missing-field descriptivo (página/sección/prop/colección/campo)",
+    bindingConflicts.length === 1 &&
+      bindingConflicts[0].kind === "binding-missing-field" &&
+      bindingConflicts[0].page === BOUND_PAGE &&
+      bindingConflicts[0].sectionId === BOUND_SECTION_ID &&
+      bindingConflicts[0].prop === BOUND_PROP &&
+      bindingConflicts[0].collection === BOUND_COLLECTION &&
+      bindingConflicts[0].field === BOUND_FIELD,
+    "conflicto binding-missing-field keyed por página (artefacto+archivo deduplicados)",
   );
   const caseStudiesTs = readFileSync(path.join(repoDir, "src/collections/case-studies.ts"), "utf8");
   assert(

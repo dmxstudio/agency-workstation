@@ -6,6 +6,15 @@
  */
 
 export * from "./types";
+export {
+  listCompositionBindings,
+  validateCompositionBindings,
+  parseAnyComposition,
+  type AnyComposition,
+  type BindingConflict,
+  type CompositionBinding,
+  type CompositionBindingKind,
+} from "./bindings";
 export { diffPayloads, deepEqual, type DiffChange, type DiffChangeType } from "./diff";
 export {
   ArtifactDomainError,
@@ -16,6 +25,7 @@ export {
 } from "./errors";
 export {
   ensureProjectArtifacts,
+  syncCompositionArtifacts,
   saveDraft,
   submitForReview,
   approve,
@@ -34,4 +44,5 @@ export {
   type ComputedDiff,
   type ComputeDiffOptions,
   type PhaseGate,
+  type SyncCompositionsResult,
 } from "./service";

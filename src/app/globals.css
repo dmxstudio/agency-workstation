@@ -96,6 +96,31 @@
   --accent-agent: #7c3aed;
 }
 
+/*
+ * Utilities brand-* — EXCLUSIVAS del canvas del Visual Studio (§7.4).
+ * El canvas de Puck renderiza el SITIO DEL CLIENTE (registry de
+ * src/modules/studio/registry); estos colores NO son tokens de la plataforma
+ * (§11.4) y está prohibido usarlos en la UI propia. Mapean 1:1 a las
+ * variables --brand-* del contrato de codegen (design.tokens →
+ * src/generated/tokens.css del proyecto; mismo mapeo en
+ * templates/project-base/src/app/(site)/globals.css). El Studio inyecta los
+ * valores del design.tokens aprobado dentro del iframe del canvas
+ * (src/modules/studio/registry/tokens-css.ts); sin tokens aprobados aplican
+ * estos fallbacks neutros (escala gris, canvas monocromo).
+ */
+@theme inline {
+  --color-brand-50: var(--brand-50, oklch(98.5% 0 0));
+  --color-brand-100: var(--brand-100, oklch(97% 0 0));
+  --color-brand-200: var(--brand-200, oklch(92.2% 0 0));
+  --color-brand-300: var(--brand-300, oklch(87% 0 0));
+  --color-brand-400: var(--brand-400, oklch(70.8% 0 0));
+  --color-brand-500: var(--brand-500, oklch(55.6% 0 0));
+  --color-brand-600: var(--brand-600, oklch(43.9% 0 0));
+  --color-brand-700: var(--brand-700, oklch(37.1% 0 0));
+  --color-brand-800: var(--brand-800, oklch(26.9% 0 0));
+  --color-brand-900: var(--brand-900, oklch(20.5% 0 0));
+}
+
 @layer base {
   /* Bordes de 1px omnipresentes: color por defecto = token border */
   *,

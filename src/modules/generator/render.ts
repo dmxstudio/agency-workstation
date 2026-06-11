@@ -1,17 +1,20 @@
+import { flattenSitemap, type FlatPage } from "@/modules/artifacts";
 import type {
   CmsCollection,
   CmsCollectionsPayload,
   CmsField,
   ContentPagePayload,
   DesignTokensPayload,
-  PageCompositionItem,
   PageCompositionPayload,
   PageContent,
-  SitemapNode,
   SpecSitemapPayload,
 } from "@/modules/artifacts";
 
 import { withCodegenHeader } from "./ownership";
+
+// Canonical sitemap flattening lives in the artifacts module (page keys must
+// match `page.composition` artifact keys); re-exported here for compatibility.
+export { flattenSitemap, type FlatPage };
 
 /**
  * Pure, deterministic renderers: approved artifact payloads → file contents
@@ -33,12 +36,15 @@ import { withCodegenHeader } from "./ownership";
  *   src/collections/index.ts       ← cms.collections       (owned-by-codegen)
  *     exports `generatedCollections: CollectionConfig[]`
  *   src/seed/content.json          ← sitemap + cms.collections + content.page
+ *                                    + page.composition (per page, keyed)
  *     (owned-by-codegen) — fixtures in the EXACT shape the template's
  *     `scripts/seed.mts` consumes (`npm run seed`): `collections` (sample
  *     documents per generated collection, §7.3 "fixtures de contenido") and
- *     `pages` (initial Puck compositions built from the approved copy)
+ *     `pages` (Puck Data per page: the APPROVED `page.composition` artifact
+ *     of that page when it exists, scaffold from the approved copy otherwise)
  *   src/compositions/page-<slug>.json ← page.composition   (owned-by-HUMAN:
- *     scaffolded once, then the Studio/human owns it forever — §18.2)
+ *     scaffolded once as Puck Data, then the Studio/human owns it forever —
+ *     §18.2; pre-existing files in legacy 1.0 shape are still validated)
  *
  * Outside the manifest, the engine also sets the `name` field of the
  * template's `package.json` ONCE at initial generation (see `engine.ts`).
@@ -56,8 +62,13 @@ export interface GeneratorInput {
   tokens: DesignTokensPayload;
   /** Optional: enriches seed content and composition scaffolds when approved. */
   content: ContentPagePayload | null;
-  /** Optional: approved compositions become the initial human scaffolds. */
-  compositions: PageCompositionPayload | null;
+  /**
+   * APPROVED per-page `page.composition` artifacts (Puck Data), keyed by page
+   * path (the artifact `key`: `home`, `servicios`, `legal/terms`, …). Pages
+   * without an approved composition fall back to the content.page scaffold.
+   * Legacy artifacts (schemaVersion 1.0) are skipped by the service loader.
+   */
+  compositions: Record<string, PageCompositionPayload>;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,40 +93,6 @@ export function slugify(value: string): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "proyecto"
   );
-}
-
-export interface FlatPage {
-  slug: string;
-  title: string;
-  /** URL path from the root, e.g. `/`, `/legal/terms`. */
-  path: string;
-  /** Path in the `pages` collection (no leading slash), e.g. `home`, `legal/terms`. */
-  pagePath: string;
-}
-
-/**
- * Flattens the sitemap tree into URL paths (parent slugs become segments).
- * The home page (URL `/`) is the root node with slug `home` when one exists,
- * otherwise the FIRST root node of the sitemap (sitemaps start at home).
- */
-export function flattenSitemap(nodes: SitemapNode[], parents: string[] = []): FlatPage[] {
-  const homeSlug =
-    parents.length === 0
-      ? (nodes.find((node) => node.slug === "home")?.slug ?? nodes[0]?.slug)
-      : undefined;
-  const out: FlatPage[] = [];
-  for (const node of nodes) {
-    const isRootHome = parents.length === 0 && node.slug === homeSlug;
-    const segments = isRootHome ? [] : [...parents, node.slug];
-    out.push({
-      slug: node.slug,
-      title: node.title,
-      path: segments.length === 0 ? "/" : `/${segments.join("/")}`,
-      pagePath: segments.length === 0 ? node.slug : segments.join("/"),
-    });
-    out.push(...flattenSitemap(node.children, segments.length === 0 ? [node.slug] : segments));
-  }
-  return out;
 }
 
 export function compositionFilePath(slug: string): string {
@@ -536,17 +513,8 @@ function pageBlocks(
   return blocks;
 }
 
-/**
- * Seed fixtures consumed by the template's seed script (`npm run seed`):
- * sample CMS documents from `cms.collections` plus one published page per
- * sitemap entry, composed with registry sections from the approved copy.
- * When `content.page` is not approved yet, pages still seed (HeroMinimal +
- * nav) so the generated site renders end-to-end. No codegen header: comments
- * are not valid JSON; the manifest hash covers edit detection (`$comment`
- * carries the signaling instead).
- */
-export function renderSeedContent(input: GeneratorInput): string {
-  const pages = flattenSitemap(input.sitemap.pages);
+/** Navigation context shared by the seed pages and the composition scaffolds. */
+function buildSeedNav(input: GeneratorInput, pages: FlatPage[]): SeedNavContext {
   const bySlug = new Map(pages.map((page) => [page.slug, page]));
   const links = (slugs: string[]): { label: string; href: string }[] =>
     slugs
@@ -556,7 +524,7 @@ export function renderSeedContent(input: GeneratorInput): string {
 
   const contactPage = pages.find((page) => page.slug === "contacto" || page.slug === "contact");
   const footerLinks = links(input.sitemap.navigation.footer);
-  const nav: SeedNavContext = {
+  return {
     brand: input.projectName,
     headerLinks: links(input.sitemap.navigation.header),
     footerColumns:
@@ -565,24 +533,79 @@ export function renderSeedContent(input: GeneratorInput): string {
     tagline: input.content?.keyMessages[0] ?? "",
     legal: `© ${input.projectName}. Todos los derechos reservados.`,
   };
+}
 
+interface ResolvedPageData {
+  title: string;
+  description: string;
+  content: SeedBlock[];
+  /** Whether the data came from an approved `page.composition` artifact. */
+  fromComposition: boolean;
+}
+
+/**
+ * Page data, by priority:
+ * 1. The APPROVED `page.composition` artifact of that page (Puck Data, keyed
+ *    by page path) — the Studio's truth, emitted verbatim.
+ * 2. Fallback: the scaffold composed from the approved `content.page` copy
+ *    (`pageBlocks`); pages without copy still render (HeroMinimal + nav).
+ */
+function resolvePageData(
+  page: FlatPage,
+  input: GeneratorInput,
+  nav: SeedNavContext,
+  contentBySlug: Map<string, PageContent>,
+): ResolvedPageData {
+  const contentPage = contentBySlug.get(page.slug);
+  const composition = input.compositions[page.pagePath];
+  if (composition) {
+    const rootProps = composition.root.props;
+    return {
+      title: rootProps.title || contentPage?.title || page.title,
+      description: rootProps.description || contentPage?.seo.description || "",
+      content: composition.content,
+      fromComposition: true,
+    };
+  }
+  return {
+    title: contentPage?.title ?? page.title,
+    description: contentPage?.seo.description ?? "",
+    content: pageBlocks(page, contentPage, nav),
+    fromComposition: false,
+  };
+}
+
+/**
+ * Seed fixtures consumed by the template's seed script (`npm run seed`):
+ * sample CMS documents from `cms.collections` plus one published page per
+ * sitemap entry. Each page's blocks come from its APPROVED `page.composition`
+ * artifact (per-page, keyed by path) when there is one — including its CMS
+ * binding placeholders (`$seedRef`), which `scripts/seed.mts` resolves to
+ * live `{ collection, docId, …snapshot }` refs — with fallback to the
+ * content.page scaffold otherwise. No codegen header: comments are not valid
+ * JSON; the manifest hash covers edit detection (`$comment` carries the
+ * signaling instead).
+ */
+export function renderSeedContent(input: GeneratorInput): string {
+  const pages = flattenSitemap(input.sitemap.pages);
+  const nav = buildSeedNav(input, pages);
   const contentBySlug = new Map(
     (input.content?.pages ?? []).map((page) => [page.slug, page]),
   );
 
   const seed = {
     $comment:
-      "@generated agency-workstation — OWNED-BY-CODEGEN. Fixtures emitted from the approved artifacts (cms.collections + spec.sitemap + content.page); loaded by `npm run seed`. Do not edit by hand: manual edits are reported as conflicts on regeneration.",
+      "@generated agency-workstation — OWNED-BY-CODEGEN. Fixtures emitted from the approved artifacts (cms.collections + spec.sitemap + content.page + page.composition per page); loaded by `npm run seed`. Do not edit by hand: manual edits are reported as conflicts on regeneration.",
     keyMessages: input.content?.keyMessages ?? [],
     collections: renderSampleCollections(input.collections),
     pages: pages.map((page): SeedPage => {
-      const contentPage = contentBySlug.get(page.slug);
+      const data = resolvePageData(page, input, nav, contentBySlug);
       return {
-        title: contentPage?.title ?? page.title,
+        title: data.title,
         path: page.pagePath,
-        description: contentPage?.seo.description ?? "",
+        description: data.description,
         publish: true,
-        content: pageBlocks(page, contentPage, nav),
+        content: data.content,
       };
     }),
   };
@@ -593,42 +616,36 @@ export function renderSeedContent(input: GeneratorInput): string {
 // page.composition → src/compositions/page-<slug>.json (owned-by-human)
 // ---------------------------------------------------------------------------
 
-export function renderCompositionFile(item: PageCompositionItem): string {
-  return JSON.stringify(item, null, 2) + "\n";
+export function renderCompositionFile(data: PageCompositionPayload): string {
+  return JSON.stringify(data, null, 2) + "\n";
 }
 
 /**
- * Initial composition for a sitemap page, by priority:
- * 1. The approved `page.composition` item for that slug.
- * 2. A scaffold derived from approved `content.page` sections (one generic
- *    `ContentSection` per content section, props prefilled, no bindings).
- * 3. An empty composition.
+ * Initial composition FILE for a sitemap page — full Puck Data, same shape
+ * the artifact payload and the template renderer use:
+ * 1. The approved `page.composition` artifact of that page, verbatim.
+ * 2. A scaffold from the approved `content.page` copy (registry sections).
  *
  * Whatever the source, the file is scaffolded ONCE and becomes human-owned
- * forever: the living composition is the Studio's, not the artifact's (§18.2).
+ * forever: the living composition is the artifact's/Studio's, not the
+ * file's (§18.2). Files scaffolded before this model (legacy 1.0 shape,
+ * `{ slug, sections }`) are still parsed by the shared bindings helper.
  */
-function initialComposition(slug: string, input: GeneratorInput): PageCompositionItem {
-  const fromArtifact = input.compositions?.pages.find((page) => page.slug === slug);
+function initialComposition(
+  page: FlatPage,
+  input: GeneratorInput,
+  nav: SeedNavContext,
+  contentBySlug: Map<string, PageContent>,
+): PageCompositionPayload {
+  const fromArtifact = input.compositions[page.pagePath];
   if (fromArtifact) return fromArtifact;
 
-  const contentPage = input.content?.pages.find((page) => page.slug === slug);
-  if (contentPage && contentPage.sections.length > 0) {
-    return {
-      slug,
-      sections: contentPage.sections.map((section) => ({
-        id: section.id,
-        component: "ContentSection",
-        props: {
-          ...(section.heading != null ? { heading: section.heading } : {}),
-          ...(section.body != null ? { body: section.body } : {}),
-          ...(section.cta != null ? { cta: section.cta } : {}),
-        },
-        bindings: {},
-      })),
-    };
-  }
-
-  return { slug, sections: [] };
+  const data = resolvePageData(page, input, nav, contentBySlug);
+  return {
+    root: { props: { title: data.title, description: data.description } },
+    content: data.content as PageCompositionPayload["content"],
+    zones: {},
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -662,10 +679,15 @@ export function renderCodegenFiles(input: GeneratorInput): Map<string, string> {
 /** Human-owned scaffolds: written once on creation, never rewritten (§18.2). */
 export function renderHumanScaffolds(input: GeneratorInput): Map<string, string> {
   const files = new Map<string, string>();
-  for (const page of flattenSitemap(input.sitemap.pages)) {
+  const pages = flattenSitemap(input.sitemap.pages);
+  const nav = buildSeedNav(input, pages);
+  const contentBySlug = new Map(
+    (input.content?.pages ?? []).map((page) => [page.slug, page]),
+  );
+  for (const page of pages) {
     files.set(
       compositionFilePath(page.slug),
-      renderCompositionFile(initialComposition(page.slug, input)),
+      renderCompositionFile(initialComposition(page, input, nav, contentBySlug)),
     );
   }
   return files;

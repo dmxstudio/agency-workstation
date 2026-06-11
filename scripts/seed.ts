@@ -15,7 +15,14 @@
  *   - design.tokens     approved v1 (Acme corporate palette → brand-* vars)
  *   - cms.collections   approved v1 (case-studies, job-openings, testimonials)
  *   - content.page      approved v1 (copy + SEO for inicio/servicios/contacto)
- *   - page.composition  approved v1 (servicios composed with a CMS binding)
+ *   - page.composition  ONE PER PAGE (keyed by path, derived from the
+ *     approved sitemap via syncCompositionArtifacts), with per-page history:
+ *       inicio    approved v1 — the exact scaffold the Generator emits for
+ *                 the home page (built with the generator's own renderer)
+ *       servicios approved v1 — hand-authored Puck Data with CMS bindings
+ *       nosotros  draft — unapproved changes (scaffold + extra section), so
+ *                 the Studio shows a real pending draft
+ *       blog / carreras / contacto stay `empty` (fallback scaffold)
  *   - release           empty (deploy is a future phase)
  * - One open manual task + the activity/audit feed of the whole story
  *
@@ -54,12 +61,20 @@ import {
   getProjectArtifacts,
   saveDraft,
   submitForReview,
+  syncCompositionArtifacts,
   type HumanActor,
 } from "../src/modules/artifacts/service";
 import type { CmsCollectionsPayload } from "../src/modules/artifacts/types/cms-collections";
 import type { ContentPagePayload } from "../src/modules/artifacts/types/content-page";
 import type { DesignTokensPayload } from "../src/modules/artifacts/types/design-tokens";
-import type { PageCompositionPayload } from "../src/modules/artifacts/types/page-composition";
+import {
+  pageCompositionPayloadSchema,
+  type PageCompositionPayload,
+} from "../src/modules/artifacts/types/page-composition";
+import {
+  compositionFilePath,
+  renderHumanScaffolds,
+} from "../src/modules/generator/render";
 import type { SpecIntakePayload } from "../src/modules/artifacts/types/spec-intake";
 import type { SpecSitemapPayload } from "../src/modules/artifacts/types/spec-sitemap";
 import type { SpecStrategyPayload } from "../src/modules/artifacts/types/spec-strategy";
@@ -556,42 +571,174 @@ const contentV1: ContentPagePayload = {
 };
 
 /**
- * Composición inicial de «Servicios» con un binding CMS (`body` ←
- * `case-studies.summary`). El binding es el que la regeneración vigila: si una
- * versión futura de `cms.collections` elimina ese campo, el conflicto
- * `binding-missing-field` aparece en la pantalla del Generator
- * (scripts/e2e-generator.ts lo demuestra).
+ * Composición de la página «Servicios» (artefacto `page.composition` keyed
+ * `key="servicios"`, schema v2 = Data JSON de Puck del template). Dos
+ * bindings CMS:
+ *
+ * - `TestimonialQuote.testimonial` usa el placeholder `$seedRef` que el
+ *   `scripts/seed.mts` del proyecto generado resuelve a una referencia viva
+ *   `{ collection, docId, …snapshot }` (render real del template).
+ * - `ImageText` lleva en `props.source` una referencia viva a
+ *   `case-studies` cuyo snapshot copia el campo `summary`. Es el binding que
+ *   la regeneración vigila: si una versión futura de `cms.collections`
+ *   elimina `summary`, aparece el conflicto `binding-missing-field` keyed por
+ *   página en la pantalla del Generator (scripts/e2e-generator.ts lo
+ *   demuestra). El componente ignora props desconocidas, así que la página
+ *   renderiza idéntica en el template.
  */
-const compositionsV1: PageCompositionPayload = {
-  pages: [
+const serviciosCompositionV1: PageCompositionPayload = {
+  root: {
+    props: {
+      title: "Servicios — Acme Industrial",
+      description:
+        "Maquinaria de envasado, líneas de producción y mantenimiento con SLA de 24 horas.",
+    },
+  },
+  content: [
     {
-      slug: "servicios",
-      sections: [
-        {
-          id: "intro",
-          component: "Hero",
-          props: {
-            title: "Un único proveedor para toda la vida útil de su maquinaria",
-            subtitle: "Ingeniería, fabricación y mantenimiento con equipo propio.",
+      type: "Navbar",
+      props: {
+        id: "Navbar-servicios-1",
+        brand: "Sitio Corporativo Acme",
+        tone: "light",
+        sticky: true,
+        links: [
+          { label: "Inicio", href: "/" },
+          { label: "Servicios", href: "/servicios" },
+          { label: "Nosotros", href: "/nosotros" },
+          { label: "Blog", href: "/blog" },
+          { label: "Contacto", href: "/contacto" },
+        ],
+        ctaLabel: "Contacto",
+        ctaHref: "/contacto",
+      },
+    },
+    {
+      type: "Hero",
+      props: {
+        id: "Hero-servicios-2",
+        eyebrow: "Servicios",
+        title: "Un único proveedor para toda la vida útil de su maquinaria",
+        subtitle: "Ingeniería, fabricación y mantenimiento con equipo propio.",
+        align: "center",
+        tone: "light",
+        padding: "spacious",
+        size: "normal",
+        primaryCta: "Pedir una auditoría de línea",
+        primaryCtaHref: "/contacto",
+        secondaryCta: "",
+        secondaryCtaStyle: "ghost",
+      },
+    },
+    {
+      type: "ImageText",
+      props: {
+        id: "caso-destacado",
+        title: "Caso destacado",
+        body: "Línea de envasado llave en mano para Atlántica Foods: −38 % de paradas no planificadas en el primer trimestre.",
+        mediaSide: "right",
+        tone: "subtle",
+        padding: "normal",
+        // Binding vivo a case-studies (snapshot del campo `summary`).
+        source: {
+          collection: "case-studies",
+          docId: 1,
+          title: "Caso de éxito 1",
+          summary: "Resumen del caso destacado que alimenta esta sección.",
+        },
+      },
+    },
+    {
+      type: "TestimonialQuote",
+      props: {
+        id: "TestimonialQuote-servicios-4",
+        testimonial: { $seedRef: { collection: "testimonials", index: 0 } },
+        tone: "light",
+        padding: "normal",
+      },
+    },
+    {
+      type: "Cta",
+      props: {
+        id: "Cta-servicios-5",
+        title: "Pedir una auditoría de línea",
+        subtitle: "Respondemos en menos de 24 horas laborables.",
+        cta: "Contactar",
+        ctaHref: "/contacto",
+        align: "center",
+        tone: "brand",
+        padding: "normal",
+      },
+    },
+    {
+      type: "Footer",
+      props: {
+        id: "Footer-servicios-6",
+        brand: "Sitio Corporativo Acme",
+        tagline: "Maquinaria fiable que reduce paradas de producción",
+        tone: "dark",
+        columns: [
+          {
+            title: "Sitio Corporativo Acme",
+            links: [
+              { label: "Servicios", href: "/servicios" },
+              { label: "Blog", href: "/blog" },
+              { label: "Carreras", href: "/carreras" },
+              { label: "Contacto", href: "/contacto" },
+            ],
           },
-          bindings: {},
-        },
-        {
-          id: "caso-destacado",
-          component: "ImageText",
-          props: { title: "Caso destacado" },
-          bindings: { body: "case-studies.summary" },
-        },
-        {
-          id: "cierre",
-          component: "Cta",
-          props: { title: "Pedir una auditoría de línea", ctaHref: "/contacto" },
-          bindings: {},
-        },
-      ],
+        ],
+        legal: "© Sitio Corporativo Acme. Todos los derechos reservados.",
+      },
     },
   ],
+  zones: {},
 };
+
+// ---------------------------------------------------------------------------
+// Composition scaffolds — built with the GENERATOR's own renderer so the
+// approved home composition is byte-equal to what `generateProject` used to
+// scaffold for that page (the demo never invents a second truth).
+// ---------------------------------------------------------------------------
+
+const scaffoldFiles = renderHumanScaffolds({
+  projectName: DEMO_PROJECT_NAME,
+  sitemap: sitemapFinal,
+  collections: collectionsV1,
+  tokens: tokensV1,
+  content: contentV1,
+  compositions: {},
+});
+
+/** Puck Data the Generator scaffolds for a sitemap page (from approved copy). */
+function scaffoldComposition(slug: string): PageCompositionPayload {
+  const raw = scaffoldFiles.get(compositionFilePath(slug));
+  if (!raw) {
+    throw new Error(`El generator no produjo scaffold de composición para «${slug}».`);
+  }
+  return pageCompositionPayloadSchema.parse(JSON.parse(raw));
+}
+
+/**
+ * Borrador SIN aprobar de «Nosotros»: el scaffold del generator más una
+ * sección nueva insertada antes del footer — deja al Studio un draft real
+ * (estado `draft`, v0, diff no vacío) para la demo.
+ */
+function nosotrosDraftComposition(): PageCompositionPayload {
+  const data = scaffoldComposition("nosotros");
+  data.content.splice(Math.max(data.content.length - 1, 0), 0, {
+    type: "ImageText",
+    props: {
+      id: "ImageText-nosotros-planta",
+      title: "Nuestra planta de producción",
+      body: "12.000 m² en Torrejón de Ardoz con líneas de mecanizado propias y banco de pruebas: cada máquina se valida antes de la entrega.",
+      mediaSide: "right",
+      tone: "subtle",
+      padding: "normal",
+    },
+  });
+  return data;
+}
 
 // ---------------------------------------------------------------------------
 // Seed
@@ -683,8 +830,7 @@ async function main(): Promise<void> {
   const tokens = byType.get("design.tokens");
   const collections = byType.get("cms.collections");
   const content = byType.get("content.page");
-  const composition = byType.get("page.composition");
-  if (!intake || !strategy || !sitemap || !tokens || !collections || !content || !composition) {
+  if (!intake || !strategy || !sitemap || !tokens || !collections || !content) {
     throw new Error("El grafo de artefactos del proyecto demo no se instanció correctamente.");
   }
 
@@ -763,15 +909,49 @@ async function main(): Promise<void> {
   await approve(content.id, actor, "Copy y SEO aprobados por el cliente.");
   console.log("content.page: v1 aprobada (inicio, servicios, contacto).");
 
-  // --- page.composition → approved v1 ----------------------------------------
-  await saveDraft(composition.id, compositionsV1, actor);
-  await submitForReview(composition.id, actor);
-  await approve(
-    composition.id,
-    actor,
-    "Composición inicial de «Servicios» con binding al CMS (case-studies.summary).",
+  // --- page.composition por página: sync desde el sitemap aprobado ----------
+  // Un artefacto por página (key = path). Historia por página: inicio y
+  // servicios aprobadas v1, nosotros con borrador sin aprobar, el resto empty.
+  const sync = await syncCompositionArtifacts(project.id, actor);
+  console.log(
+    `page.composition: ${sync.created.length} artefactos creados desde el sitemap (${sync.created
+      .map((a) => a.key)
+      .join(", ")}).`,
   );
-  console.log("page.composition: v1 aprobada («Servicios» con binding CMS).");
+  const compositionByKey = new Map(sync.compositions.map((a) => [a.key, a]));
+  const requireComposition = (key: string) => {
+    const artifact = compositionByKey.get(key);
+    if (!artifact) throw new Error(`No se creó el artefacto page.composition de «${key}».`);
+    return artifact;
+  };
+
+  // inicio (home): el scaffold que el Generator emitía para la portada,
+  // ahora sellado como artefacto por página (misma verdad, ciclo §13).
+  const inicioComposition = requireComposition("inicio");
+  await saveDraft(inicioComposition.id, scaffoldComposition("inicio"), actor);
+  await submitForReview(inicioComposition.id, actor);
+  await approve(
+    inicioComposition.id,
+    actor,
+    "Composición de «Inicio»: scaffold del Generator desde el copy aprobado, validado como composición de portada.",
+  );
+  console.log("page.composition[inicio]: v1 aprobada (scaffold del Generator como Data de Puck).");
+
+  // servicios: composición autorada con bindings CMS reales.
+  const serviciosComposition = requireComposition("servicios");
+  await saveDraft(serviciosComposition.id, serviciosCompositionV1, actor);
+  await submitForReview(serviciosComposition.id, actor);
+  await approve(
+    serviciosComposition.id,
+    actor,
+    "Composición de «Servicios» (Data de Puck) con bindings CMS: testimonio ($seedRef) y caso destacado (case-studies, snapshot de summary).",
+  );
+  console.log("page.composition[servicios]: v1 aprobada (Data de Puck con bindings CMS).");
+
+  // nosotros: borrador con cambios sin aprobar (estado draft, sin versión).
+  const nosotrosComposition = requireComposition("nosotros");
+  await saveDraft(nosotrosComposition.id, nosotrosDraftComposition(), actor);
+  console.log("page.composition[nosotros]: borrador guardado (cambios sin aprobar).");
 
   // --- Manual open task (mirrors the Cockpit's create-task action) ----------
   await db.transaction(async (tx) => {
@@ -811,7 +991,9 @@ async function main(): Promise<void> {
   console.log("  - design.tokens     approved v1");
   console.log("  - cms.collections   approved v1 (3 colecciones)");
   console.log("  - content.page      approved v1 (3 páginas con copy/SEO)");
-  console.log("  - page.composition  approved v1 (binding case-studies.summary)");
+  console.log(
+    `  - page.composition  ${sync.created.length} artefactos (uno por página): «inicio» y «servicios» approved v1, «nosotros» en draft, resto empty`,
+  );
   console.log("  - release           empty (fase futura)");
   console.log("  - 1 tarea manual abierta");
   console.log("\nEl proyecto demo es GENERABLE: los 3 artefactos requeridos por el");

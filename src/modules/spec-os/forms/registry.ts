@@ -3,6 +3,7 @@
 import type { ComponentType } from "react";
 
 import type { ArtifactTypeKey } from "@/modules/artifacts/types";
+import { emptyPageCompositionPayload } from "@/modules/artifacts/types";
 
 import { CmsCollectionsForm, createEmptyCmsCollectionsPayload } from "./CmsCollectionsForm";
 import { ContentForm, createEmptyContentPayload } from "./ContentForm";
@@ -40,7 +41,8 @@ export const specOsFormRegistry: Record<ArtifactTypeKey, SpecOsFormEntry> = {
   },
   "page.composition": {
     Form: JsonPayloadForm,
-    createEmptyPayload: () => ({ pages: [] }),
+    // Puck Data vacío (schema v2): el editor real es el Studio (§7.4).
+    createEmptyPayload: emptyPageCompositionPayload,
   },
   release: {
     Form: JsonPayloadForm,

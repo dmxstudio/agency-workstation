@@ -12,6 +12,7 @@ export type ArtifactErrorCode =
   | "INVALID_STATE"
   | "LOCKED"
   | "NOT_OUTDATED"
+  | "SITEMAP_NOT_APPROVED"
   | "FORBIDDEN";
 
 export class ArtifactDomainError extends Error {

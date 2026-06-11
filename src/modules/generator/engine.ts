@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import path, { dirname, join } from "node:path";
 
-import { pageCompositionItemSchema, type CmsCollectionsPayload } from "@/modules/artifacts";
+import { parseAnyComposition, validateCompositionBindings } from "@/modules/artifacts";
 
 import type { Conflict } from "./conflicts";
 import { GeneratorDomainError } from "./errors";
@@ -23,6 +23,7 @@ import {
 import { TEMPLATE_COPY_EXCLUDES } from "./paths";
 import {
   CODEGEN_ZONE_DIRS,
+  flattenSitemap,
   renderCodegenFiles,
   renderHumanScaffolds,
   slugify,
@@ -162,7 +163,7 @@ export function engineGenerate(
 
   // Approved compositions may already carry bindings that the approved
   // collections do not satisfy (artifacts approved out of sync) — report.
-  const conflicts = validateBindings(repoDir, manifest, input.collections);
+  const conflicts = validateBindings(input, repoDir, manifest);
 
   return {
     repoDir,
@@ -306,10 +307,10 @@ export function engineRegenerate(input: GeneratorInput, repoDir: string): Engine
     }
   }
 
-  // 4. Binding validation: current compositions (as edited by humans, read
-  //    from disk) against the NEW collections. Conflicts are descriptive and
-  //    the composition files are NOT modified.
-  result.conflicts.push(...validateBindings(repoDir, manifest, input.collections));
+  // 4. Binding validation: APPROVED per-page composition artifacts + current
+  //    on-disk compositions (as edited by humans) against the NEW collections,
+  //    keyed per page. Conflicts are descriptive; nothing is modified.
+  result.conflicts.push(...validateBindings(input, repoDir, manifest));
 
   writeFileSync(join(repoDir, MANIFEST_FILENAME), serializeManifest(manifest), "utf8");
 
@@ -322,21 +323,52 @@ export function engineRegenerate(input: GeneratorInput, repoDir: string): Engine
 }
 
 // ---------------------------------------------------------------------------
-// Binding validation (compositions on disk vs. collections artifact)
+// Binding validation (shared helper from the artifacts module)
 // ---------------------------------------------------------------------------
 
 const COMPOSITIONS_PREFIX = "src/compositions/";
 
+/**
+ * `src/compositions/page-<slug>.json` → page key. Files are named by slug;
+ * when the slug is in the current sitemap the canonical page path is used
+ * (e.g. `terms` → `legal/terms`) so disk findings de-duplicate against the
+ * artifact findings of the same page.
+ */
+function pageLabelFromPath(relPath: string, pagePathBySlug: Map<string, string>): string {
+  const slug = relPath
+    .slice(COMPOSITIONS_PREFIX.length)
+    .replace(/^page-/, "")
+    .replace(/\.json$/, "");
+  return pagePathBySlug.get(slug) ?? slug;
+}
+
+/**
+ * Validates CMS bindings against the NEW collections, per page/artifact
+ * (keyed), via the SHARED `validateCompositionBindings` helper (§10.2):
+ *
+ * 1. The APPROVED per-page `page.composition` artifacts (`input.compositions`,
+ *    keyed by page path) — the Studio's live truth.
+ * 2. The on-disk composition files (human-owned, possibly hand-edited) — both
+ *    the current Puck-Data shape and the legacy 1.0 `{ slug, sections }`
+ *    shape are accepted; unreadable files become `composition-unreadable`.
+ *
+ * Identical findings from both sources are de-duplicated. Conflicts are
+ * descriptive data; nothing is ever modified (§18.2).
+ */
 function validateBindings(
+  input: GeneratorInput,
   repoDir: string,
   manifest: OwnershipManifest,
-  collections: CmsCollectionsPayload,
 ): Conflict[] {
   const conflicts: Conflict[] = [];
-  const fieldsByCollection = new Map<string, Set<string>>(
-    collections.collections.map((c) => [c.slug, new Set(c.fields.map((f) => f.name))]),
-  );
 
+  for (const key of Object.keys(input.compositions).sort()) {
+    conflicts.push(...validateCompositionBindings(input.compositions[key], input.collections, key));
+  }
+
+  const pagePathBySlug = new Map(
+    flattenSitemap(input.sitemap.pages).map((page) => [page.slug, page.pagePath]),
+  );
   const compositionPaths = Object.entries(manifest.files)
     .filter(([p, entry]) => entry.owner === "human" && p.startsWith(COMPOSITIONS_PREFIX))
     .map(([p]) => p)
@@ -346,10 +378,13 @@ function validateBindings(
     const abs = join(repoDir, relPath);
     if (!existsSync(abs)) continue;
 
-    let item;
+    let composition = null;
     try {
-      item = pageCompositionItemSchema.parse(JSON.parse(readFileSync(abs, "utf8")));
+      composition = parseAnyComposition(JSON.parse(readFileSync(abs, "utf8")));
     } catch {
+      composition = null;
+    }
+    if (!composition) {
       conflicts.push({
         kind: "composition-unreadable",
         path: relPath,
@@ -357,40 +392,26 @@ function validateBindings(
       });
       continue;
     }
-
-    for (const section of item.sections) {
-      for (const [prop, binding] of Object.entries(section.bindings)) {
-        const dot = binding.indexOf(".");
-        const collectionSlug = dot === -1 ? binding : binding.slice(0, dot);
-        const fieldName = dot === -1 ? "" : binding.slice(dot + 1);
-        const fields = fieldsByCollection.get(collectionSlug);
-
-        if (!fields) {
-          conflicts.push({
-            kind: "binding-missing-collection",
-            page: item.slug,
-            sectionId: section.id,
-            prop,
-            binding,
-            collection: collectionSlug,
-            message: `La página \`${item.slug}\`, sección \`${section.id}\`, prop \`${prop}\` está bindeada a \`${binding}\`, pero la colección \`${collectionSlug}\` ya no existe en la spec. La página no se modifica; resuelve el binding o restaura la colección.`,
-          });
-          continue;
-        }
-        if (!fields.has(fieldName)) {
-          conflicts.push({
-            kind: "binding-missing-field",
-            page: item.slug,
-            sectionId: section.id,
-            prop,
-            binding,
-            collection: collectionSlug,
-            field: fieldName,
-            message: `La página \`${item.slug}\`, sección \`${section.id}\`, prop \`${prop}\` está bindeada a \`${binding}\`, pero el campo \`${fieldName}\` fue eliminado de la colección \`${collectionSlug}\`. La página no se modifica; resuelve el binding o restaura el campo.`,
-          });
-        }
-      }
-    }
+    conflicts.push(
+      ...validateCompositionBindings(
+        composition,
+        input.collections,
+        pageLabelFromPath(relPath, pagePathBySlug),
+      ),
+    );
   }
-  return conflicts;
+
+  // De-duplicate (an approved composition is also scaffolded on disk).
+  const seen = new Set<string>();
+  return conflicts.filter((conflict) => {
+    const key = JSON.stringify([
+      conflict.kind,
+      "path" in conflict ? conflict.path : "",
+      "page" in conflict ? [conflict.page, conflict.sectionId, conflict.prop, conflict.collection] : "",
+      "field" in conflict ? conflict.field : "",
+    ]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

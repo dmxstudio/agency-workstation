@@ -74,6 +74,51 @@ export function getSitemapSlugs(payload: SpecSitemapPayload): string[] {
   return collectSlugs(payload.pages);
 }
 
+// ---------------------------------------------------------------------------
+// Flattening: sitemap tree → URL paths / page keys
+// ---------------------------------------------------------------------------
+
+export interface FlatPage {
+  slug: string;
+  title: string;
+  /** URL path from the root, e.g. `/`, `/legal/terms`. */
+  path: string;
+  /**
+   * Path in the `pages` collection (no leading slash), e.g. `home`,
+   * `legal/terms`. This is ALSO the instance key of the page's
+   * `page.composition` artifact (`artifacts.key`).
+   */
+  pagePath: string;
+}
+
+/**
+ * Flattens the sitemap tree into URL paths (parent slugs become segments).
+ * The home page (URL `/`) is the root node with slug `home` when one exists,
+ * otherwise the FIRST root node of the sitemap (sitemaps start at home).
+ *
+ * Canonical implementation shared by the generator (file/seed emission) and
+ * the artifacts module (composition keys) so both always agree on page keys.
+ */
+export function flattenSitemap(nodes: SitemapNode[], parents: string[] = []): FlatPage[] {
+  const homeSlug =
+    parents.length === 0
+      ? (nodes.find((node) => node.slug === "home")?.slug ?? nodes[0]?.slug)
+      : undefined;
+  const out: FlatPage[] = [];
+  for (const node of nodes) {
+    const isRootHome = parents.length === 0 && node.slug === homeSlug;
+    const segments = isRootHome ? [] : [...parents, node.slug];
+    out.push({
+      slug: node.slug,
+      title: node.title,
+      path: segments.length === 0 ? "/" : `/${segments.join("/")}`,
+      pagePath: segments.length === 0 ? node.slug : segments.join("/"),
+    });
+    out.push(...flattenSitemap(node.children, segments.length === 0 ? [node.slug] : segments));
+  }
+  return out;
+}
+
 export const specSitemapDefinition = defineArtifactType<SpecSitemapPayload>({
   type: "spec.sitemap",
   schemaVersion: "1.0",

@@ -44,8 +44,14 @@ import {
   ensureProjectArtifacts,
   saveDraft,
   submitForReview,
+  syncCompositionArtifacts,
   type HumanActor,
 } from "../src/modules/artifacts/service";
+import {
+  pageCompositionPayloadSchema,
+  type PageCompositionPayload,
+} from "../src/modules/artifacts/types/page-composition";
+import { listCompositionBindings } from "../src/modules/artifacts/bindings";
 import { GeneratorDomainError } from "../src/modules/generator/errors";
 import { gitLog } from "../src/modules/generator/git";
 import { parseManifest, sha256, MANIFEST_FILENAME } from "../src/modules/generator/ownership";
@@ -224,21 +230,35 @@ const contentV1 = {
   ],
 };
 
-const compositionsV1 = {
-  pages: [
+/**
+ * Composición de la HOME (artefacto keyed `key="home"`, schema v2 = Data de
+ * Puck). El bloque `PostFeature` lleva una referencia viva a `posts` cuyo
+ * snapshot copia `subtitle`: existe en v1 y desaparece en v2 → conflicto
+ * `binding-missing-field` keyed por página.
+ */
+const homeCompositionV1: PageCompositionPayload = {
+  root: { props: { title: "Inicio", description: "Página de inicio" } },
+  content: [
     {
-      slug: "home",
-      sections: [
-        {
-          id: "intro",
-          component: "Hero",
-          props: { heading: "Bienvenido" },
-          // `posts.subtitle` exists in v1 and disappears in v2 → conflict.
-          bindings: { subtitle: "posts.subtitle" },
-        },
-      ],
+      type: "Hero",
+      props: {
+        id: "hero-home",
+        title: "Bienvenido",
+        subtitle: "Texto de portada.",
+        tone: "light",
+      },
+    },
+    {
+      type: "PostFeature",
+      props: {
+        id: "post-destacado",
+        post: { collection: "posts", docId: 1, title: "Título 1", subtitle: "Subtítulo 1" },
+        tone: "light",
+        padding: "normal",
+      },
     },
   ],
+  zones: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -296,14 +316,49 @@ async function main(): Promise<void> {
   const repoDir = getProjectRepoDir(projectId);
 
   try {
+    // -----------------------------------------------------------------------
+    if (templateKind === "real") {
+      console.log("\n# Schema v2 (Data de Puck) valida las composiciones reales del template");
+      const templateSeed = JSON.parse(
+        readFileSync(
+          path.join(root, "templates", "project-base", "src", "seed", "content.json"),
+          "utf8",
+        ),
+      ) as {
+        pages: { title: string; path: string; description?: string; content: unknown[] }[];
+      };
+      const parsedPages = templateSeed.pages.map((page) =>
+        pageCompositionPayloadSchema.safeParse({
+          root: { props: { title: page.title, description: page.description ?? "" } },
+          content: page.content,
+          zones: {},
+        }),
+      );
+      assert(
+        parsedPages.length > 0 && parsedPages.every((result) => result.success),
+        `las ${parsedPages.length} páginas del seed del template validan con el schema v2`,
+      );
+      const homeSeedPage = templateSeed.pages.find((page) => page.path === "home")!;
+      const homeData = pageCompositionPayloadSchema.parse({
+        root: { props: { title: homeSeedPage.title, description: homeSeedPage.description ?? "" } },
+        content: homeSeedPage.content,
+        zones: {},
+      });
+      assert(
+        listCompositionBindings(homeData, "home").some(
+          (binding) => binding.kind === "seed-ref" && binding.collection === "testimonials",
+        ),
+        "listCompositionBindings detecta los $seedRef del seed del template",
+      );
+    }
+
     const artifacts = await ensureProjectArtifacts(projectId, admin);
     const byType = new Map(artifacts.map((a) => [a.type, a]));
     const sitemapArt = byType.get("spec.sitemap")!;
     const collectionsArt = byType.get("cms.collections")!;
     const tokensArt = byType.get("design.tokens")!;
     const contentArt = byType.get("content.page")!;
-    const compositionArt = byType.get("page.composition")!;
-    // page.composition depends on sitemap+collections+tokens; content on strategy.
+    // content.page depends on strategy; page.composition se deriva del sitemap.
     const strategyArt = byType.get("spec.strategy")!;
 
     // -----------------------------------------------------------------------
@@ -338,12 +393,28 @@ async function main(): Promise<void> {
       admin,
     );
     await approveArtifact(contentArt.id, contentV1, admin);
-    await approveArtifact(compositionArt.id, compositionsV1, admin);
+
+    // Composiciones por página: derivadas del sitemap aprobado, keyed por path.
+    const sync = await syncCompositionArtifacts(projectId, admin);
+    assert(
+      sync.created
+        .map((a) => a.key)
+        .sort()
+        .join(",") === "blog,home,legal,legal/terms",
+      "sync: una composición por página del sitemap (keys = paths)",
+    );
+    const homeComp = sync.compositions.find((a) => a.key === "home")!;
+    await approveArtifact(homeComp.id, homeCompositionV1, admin);
 
     requirements = await getGenerationRequirements(projectId);
     assert(
       requirements.every((r) => r.ok),
-      "todos los requisitos ok tras aprobar (requeridos y opcionales)",
+      "todos los requisitos ok tras aprobar (page.composition agrega: 1/4 aprobadas basta)",
+    );
+    const compositionReq = requirements.find((r) => r.type === "page.composition")!;
+    assert(
+      compositionReq.label.includes("1/4 aprobadas"),
+      "el checklist agrega las composiciones keyed (1/4 aprobadas)",
     );
 
     await expectGeneratorError(
@@ -424,18 +495,35 @@ async function main(): Promise<void> {
       generatedPkg.name === "proyecto-smoke-generador",
       "package.json#name = slug del proyecto (única escritura fuera del manifest)",
     );
-    const homeComposition = readFileSync(
-      path.join(repoDir, "src/compositions/page-home.json"),
-      "utf8",
+    const homeComposition = JSON.parse(
+      readFileSync(path.join(repoDir, "src/compositions/page-home.json"), "utf8"),
+    ) as PageCompositionPayload;
+    assert(
+      homeComposition.root.props.title === "Inicio" &&
+        homeComposition.content.some(
+          (block) =>
+            block.type === "PostFeature" &&
+            (block.props.post as { collection?: string })?.collection === "posts",
+        ),
+      "composición de home proviene del artefacto page.composition[home] aprobado (Data de Puck)",
     );
     assert(
-      JSON.parse(homeComposition).sections[0].bindings.subtitle === "posts.subtitle",
-      "composición de home proviene del artefacto page.composition aprobado",
+      listCompositionBindings(homeComposition, "home").some(
+        (binding) =>
+          binding.kind === "external-ref" &&
+          binding.collection === "posts" &&
+          binding.snapshotFields.includes("subtitle"),
+      ),
+      "listCompositionBindings detecta la referencia viva a posts (snapshot con subtitle)",
     );
+    const blogComposition = JSON.parse(
+      readFileSync(path.join(repoDir, "src/compositions/page-blog.json"), "utf8"),
+    ) as PageCompositionPayload;
     assert(
-      JSON.parse(readFileSync(path.join(repoDir, "src/compositions/page-blog.json"), "utf8"))
-        .sections.length === 0,
-      "página sin composición ni contenido → scaffold mínimo",
+      pageCompositionPayloadSchema.safeParse(blogComposition).success &&
+        blogComposition.content.map((block) => block.type).join(",") ===
+          "Navbar,HeroMinimal,Footer",
+      "página sin composición aprobada → scaffold Data (Navbar + HeroMinimal + Footer)",
     );
 
     const manifest = parseManifest(readFileSync(path.join(repoDir, MANIFEST_FILENAME), "utf8"));
@@ -472,14 +560,19 @@ async function main(): Promise<void> {
 
     // -----------------------------------------------------------------------
     console.log("\n# Edición humana + cambio de spec");
-    // (a) Human edits the composition (human-owned: always preserved).
+    // (a) Human edits the composition file (human-owned: always preserved).
+    //     The new block carries a live ref to a collection that does not exist
+    //     → `binding-missing-collection` reported from the DISK validation.
     const compositionPath = path.join(repoDir, "src/compositions/page-home.json");
-    const editedComposition = JSON.parse(readFileSync(compositionPath, "utf8"));
-    editedComposition.sections.push({
-      id: "cta",
-      component: "CtaBanner",
-      props: { label: "Contacto" },
-      bindings: {},
+    const editedComposition = JSON.parse(
+      readFileSync(compositionPath, "utf8"),
+    ) as PageCompositionPayload;
+    editedComposition.content.push({
+      type: "Banner",
+      props: {
+        id: "hack-banner",
+        note: { collection: "ghosts", docId: 1, title: "x" },
+      },
     });
     writeFileSync(compositionPath, JSON.stringify(editedComposition, null, 2) + "\n");
     const editedCompositionBytes = readFileSync(compositionPath, "utf8");
@@ -524,19 +617,32 @@ async function main(): Promise<void> {
       readFileSync(authorsPath, "utf8").includes("hack manual"),
       "authors.ts conserva el hack humano (no se sobrescribe)",
     );
-    const bindingConflict = regen1.summary.conflicts.find(
+    const bindingConflicts = regen1.summary.conflicts.filter(
       (c) => c.kind === "binding-missing-field",
     );
     assert(
-      bindingConflict != null &&
-        bindingConflict.kind === "binding-missing-field" &&
-        bindingConflict.page === "home" &&
-        bindingConflict.sectionId === "intro" &&
-        bindingConflict.prop === "subtitle" &&
-        bindingConflict.collection === "posts" &&
-        bindingConflict.field === "subtitle",
-      "binding a campo eliminado → conflicto descriptivo (página/sección/prop/campo)",
+      bindingConflicts.length === 1 &&
+        bindingConflicts[0].kind === "binding-missing-field" &&
+        bindingConflicts[0].page === "home" &&
+        bindingConflicts[0].sectionId === "post-destacado" &&
+        bindingConflicts[0].prop === "post" &&
+        bindingConflicts[0].collection === "posts" &&
+        bindingConflicts[0].field === "subtitle",
+      "binding a campo eliminado → UN conflicto keyed por página (artefacto+disco deduplicados)",
     );
+    const ghostConflict = regen1.summary.conflicts.find(
+      (c) => c.kind === "binding-missing-collection",
+    );
+    assert(
+      ghostConflict != null &&
+        ghostConflict.kind === "binding-missing-collection" &&
+        ghostConflict.page === "home" &&
+        ghostConflict.sectionId === "hack-banner" &&
+        ghostConflict.prop === "note" &&
+        ghostConflict.collection === "ghosts",
+      "la edición humana del archivo en disco también se valida (colección inexistente)",
+    );
+    assert(regen1.summary.compositionVersions?.home === 1, "summary registra page.composition[home] v1");
     assert(regen1.summary.commit != null, "regeneración con cambios → commit");
     const log2 = await gitLog(repoDir);
     assert(

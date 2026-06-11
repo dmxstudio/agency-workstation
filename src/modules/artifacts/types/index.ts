@@ -39,8 +39,10 @@ export {
   specSitemapDefinition,
   sitemapNodeSchema,
   getSitemapSlugs,
+  flattenSitemap,
   type SpecSitemapPayload,
   type SitemapNode,
+  type FlatPage,
 } from "./spec-sitemap";
 export {
   contentPagePayloadSchema,
@@ -70,11 +72,17 @@ export {
 export {
   pageCompositionPayloadSchema,
   pageCompositionDefinition,
-  pageCompositionItemSchema,
-  compositionSectionSchema,
+  compositionBlockSchema,
+  compositionRootSchema,
+  emptyPageCompositionPayload,
+  pageCompositionLabel,
+  PAGE_COMPOSITION_LABEL_PREFIX,
+  legacyPageCompositionItemSchema,
+  legacyCompositionSectionSchema,
   type PageCompositionPayload,
-  type PageCompositionItem,
-  type CompositionSection,
+  type CompositionBlock,
+  type LegacyPageCompositionItem,
+  type LegacyCompositionSection,
 } from "./page-composition";
 export {
   releasePayloadSchema,

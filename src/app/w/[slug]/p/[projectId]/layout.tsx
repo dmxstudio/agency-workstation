@@ -86,10 +86,14 @@ const navItemClass =
   "flex items-center gap-2 rounded px-2 py-1.5 text-[13px] text-muted transition-colors hover:bg-surface-raised hover:text-foreground";
 const navItemActiveClass = "bg-surface-raised font-medium text-foreground";
 
+/** Módulos activos (§14): Studio (§7.4) y CMS (§7.6). */
+const activeModules = [
+  { label: "Studio", segment: "studio", icon: Palette },
+  { label: "CMS", segment: "cms", icon: Database },
+] as const;
+
 /** Módulos post-fase definidos en §14 que aún no se construyen. */
 const upcomingModules = [
-  { label: "Studio", icon: Palette },
-  { label: "CMS", icon: Database },
   { label: "Review", icon: MessageSquareText },
   { label: "Deploy", icon: Rocket },
 ] as const;
@@ -203,6 +207,18 @@ export default async function ProjectLayout({
 
           <SectionLabel>Módulos</SectionLabel>
           <ul className="flex flex-col">
+            {activeModules.map(({ label, segment, icon: Icon }) => (
+              <li key={label}>
+                <NavLink
+                  href={`${basePath}/${segment}`}
+                  className={navItemClass}
+                  activeClassName={navItemActiveClass}
+                >
+                  <Icon size={14} strokeWidth={1.75} aria-hidden />
+                  {label}
+                </NavLink>
+              </li>
+            ))}
             {upcomingModules.map(({ label, icon: Icon }) => (
               <li key={label}>
                 <span

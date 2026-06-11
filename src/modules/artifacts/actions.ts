@@ -15,6 +15,7 @@ import {
   revalidate,
   saveDraft,
   submitForReview,
+  syncCompositionArtifacts,
   unlockArtifact,
   type ApproveResult,
   type ArtifactWithHistory,
@@ -23,6 +24,7 @@ import {
   type HumanActor,
   type PhaseGate,
   type ProjectArtifact,
+  type SyncCompositionsResult,
 } from "./service";
 import type { Artifact } from "@/db/schema";
 
@@ -69,6 +71,17 @@ export async function ensureProjectArtifactsAction(
   projectId: string,
 ): Promise<ActionResult<Artifact[]>> {
   return run((actor) => ensureProjectArtifacts(projectId, actor));
+}
+
+/**
+ * Deriva los artefactos `page.composition` (uno por página, keyed por path)
+ * del sitemap APROBADO: crea los que falten y marca como `outdated` (con
+ * tarea derivada) los de páginas que salieron del sitemap — nunca los borra.
+ */
+export async function syncCompositionArtifactsAction(
+  projectId: string,
+): Promise<ActionResult<SyncCompositionsResult>> {
+  return run((actor) => syncCompositionArtifacts(projectId, actor));
 }
 
 /** Valida (Zod) y guarda el borrador; `empty|approved → draft`. */

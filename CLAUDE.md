@@ -9,8 +9,9 @@
 - `npm run dev` — dev server (http://localhost:3000)
 - `npm run build` — build de producción
 - `npm run db:migrate` — aplica el schema a la DB (PGlite local por defecto)
-- `npm run db:seed` — datos demo (workspace + proyecto con los artefactos requeridos por el Generator aprobados)
+- `npm run db:seed` — datos demo (workspace + proyecto con los artefactos requeridos por el Generator aprobados y composiciones por página con historia)
 - `npx tsx scripts/e2e-generator.ts` — genera el proyecto demo + drill de conflictos §18.2
+- `npx tsx scripts/e2e-studio.ts` — drill del paso 4: edición de composición → diff → aprobación → regeneración → el sitio generado sirve el cambio (incluye el contrato de compatibilidad Studio↔template)
 
 ## Stack y decisiones locales
 
@@ -30,15 +31,21 @@ src/modules/spec-os/         formularios tipados de las 6 secciones de spec
 src/modules/generator/       generación/regeneración parcial (§7.3, §18.2): renderers
                              deterministas desde versiones SELLADAS, manifest de ownership,
                              conflictos como dato, git local por proyecto
-src/modules/{studio,review,deploy,agents}/  futuros — NO implementar sin volver a la spec
+src/modules/studio/          Visual Studio (§7.4): registry/ (espejo del registry del template,
+                             34 componentes Puck + custom field de bindings + CSS del canvas;
+                             fuente de verdad del shape = el template, ver su README.md) y
+                             editor/ (island <Puck>, panel de aprobación §13, diff, autosave).
+                             Las pantallas Studio (índice de páginas) y CMS (read-only +
+                             mapa de bindings) viven en src/app y componen artifacts+studio
+src/modules/{review,deploy,agents}/  futuros — NO implementar sin volver a la spec
 src/ui/                      design system de la plataforma (tokens §11.4 + componentes)
 src/app/                     rutas App Router (pantallas componen módulos; lógica vive en módulos)
 templates/project-base/      template del proyecto generado (Next+Payload+Puck, autocontenido,
                              node_modules y tsconfig propios; contrato en su TEMPLATE.md)
-scripts/                     migrate.ts, seed.ts, e2e-generator.ts, smoke-*.ts
+scripts/                     migrate.ts, seed.ts, e2e-generator.ts, e2e-studio.ts, smoke-*.ts
 ```
 
-Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts` y `generator → artifacts` (consume los tipos Zod y las versiones aprobadas).
+Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts`, `generator → artifacts` y `studio → artifacts` (consumen los tipos Zod, los bindings compartidos y las versiones aprobadas). `studio ↛ generator`: lo que ambos derivan de la misma spec (tokens CSS, defaults de navegación) se duplica sincronizado y documentado — el contrato lo verifica `scripts/e2e-studio.ts`.
 
 ## Generator: convenciones de ownership (§18.2)
 
@@ -55,12 +62,13 @@ Regla de dependencia entre módulos: `app → modules → db`. Los módulos no s
 3. La propagación de `outdated` **marca, nunca regenera** (§8.4).
 4. Auth siempre vía adapter; cero imports del proveedor en módulos de producto.
 5. UI solo con tokens del design system (§11.4): monocromo + acentos semánticos; violeta/cyan reservado EXCLUSIVAMENTE a actividad de agentes; mono obligatoria para IDs, versiones, diffs y logs. Sin gradientes decorativos, sin glassmorphism, sin sombras pesadas.
-6. Cero código AGPL (Webstudio prohibido). Puck/Payload (MIT) viven SOLO en el proyecto generado (`templates/project-base/`); la plataforma no los importa y los proyectos generados no dependen de ningún paquete de la plataforma en runtime.
+6. Cero código AGPL (Webstudio prohibido). **`@puckeditor/core` está permitido en la plataforma SOLO dentro de `src/modules/studio`** (canvas del Visual Studio, misma versión pineada que el template — la compatibilidad de render del Data JSON es sagrada). Payload sigue viviendo SOLO en los proyectos generados (`templates/project-base/`); la plataforma no lo importa y los proyectos generados no dependen de ningún paquete de la plataforma en runtime.
 
 ## Convenciones
 
 - IDs: prefijados + aleatorios, p.ej. `usr_x7k2…`, `ws_…`, `prj_…`, `art_…`, `ver_…`, `run_…`, `gen_…` (util en `src/db/ids.ts`).
 - Estados de artefacto: `empty | draft | in_review | approved | locked` + flags transversales `outdated`/`rejected` (§8.2). `approved` y `outdated` pueden coexistir.
+- Tipos multi-instancia (`page.composition`): una fila por página del sitemap APROBADO, identificada por `artifacts.key` = path de la página (`inicio`, `servicios`, `legal/terms`; único por `(project_id, type, key)` vivos) y `label` humano («Composición: Servicios»). Las instancias se derivan SOLO con `syncCompositionArtifacts` (crea las que faltan, marca huérfanas — nunca borra); su payload es el Data JSON de Puck del template (schema v2).
 - Payloads de artefacto: JSONB validado con Zod **en cada escritura** (schemas en `src/modules/artifacts/types/`).
 - Server Actions para mutaciones (en `src/modules/*/actions.ts`, con `"use server"`); las pantallas no llaman a la DB directamente.
 - Idioma de la UI: español. Código, identificadores y commits: inglés.

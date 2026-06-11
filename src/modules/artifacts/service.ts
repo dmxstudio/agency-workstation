@@ -31,6 +31,11 @@ import {
   type ArtifactTypeKey,
   type ProjectPhaseKey,
 } from "./types/registry";
+import {
+  pageCompositionDefinition,
+  pageCompositionLabel,
+} from "./types/page-composition";
+import { flattenSitemap, specSitemapPayloadSchema } from "./types/spec-sitemap";
 
 /**
  * Artifact domain service — the canonical human-in-the-loop cycle (§13) over
@@ -221,13 +226,23 @@ async function closeDerivedTask(db: Db, projectId: string, dedupeKey: string): P
 const reviewTaskKey = (artifactId: string) => `review:${artifactId}`;
 const outdatedTaskKey = (artifactId: string) => `outdated:${artifactId}`;
 
+/**
+ * Display label of an artifact row: per-instance label (keyed multi-instance
+ * artifacts, e.g. "Composición: Servicios") or the type definition label.
+ */
+function displayLabel(artifact: Artifact): string {
+  return artifact.label ?? getArtifactTypeOrNull(artifact.type)?.label ?? artifact.type;
+}
+
 // ---------------------------------------------------------------------------
 // ensureProjectArtifacts
 // ---------------------------------------------------------------------------
 
 /**
  * Instantiates the fixed MVP artifact graph (§8.4) for a project: one `empty`
- * artifact per registered type plus the declared dependency edges.
+ * artifact per registered SINGLETON type plus the declared dependency edges.
+ * Multi-instance types (`page.composition`) are NOT instantiated here — their
+ * instances derive from the approved sitemap via {@link syncCompositionArtifacts}.
  * Idempotent: existing artifacts/edges are preserved.
  */
 export async function ensureProjectArtifacts(
@@ -250,12 +265,16 @@ export async function ensureProjectArtifacts(
       .select()
       .from(artifacts)
       .where(and(eq(artifacts.projectId, projectId), isNull(artifacts.deletedAt)));
-    const byType = new Map(existing.map((artifact) => [artifact.type, artifact]));
+    // Singleton lookup ignores keyed instances of multi-instance types.
+    const byType = new Map(
+      existing.filter((artifact) => artifact.key == null).map((artifact) => [artifact.type, artifact]),
+    );
 
     const createdTypes: ArtifactTypeKey[] = [];
     for (const type of ARTIFACT_TYPE_KEYS) {
-      if (byType.has(type)) continue;
       const definition = artifactTypeRegistry[type];
+      if (definition.multiInstance) continue; // instances come from the sitemap
+      if (byType.has(type)) continue;
       const inserted = await tx
         .insert(artifacts)
         .values({
@@ -271,6 +290,8 @@ export async function ensureProjectArtifacts(
     }
 
     // Declared dependency edges (§8.4) — from = dependent, to = upstream.
+    // Edges touching multi-instance types are materialised per instance in
+    // `syncCompositionArtifacts`.
     for (const type of ARTIFACT_TYPE_KEYS) {
       const definition = artifactTypeRegistry[type];
       const fromArtifact = byType.get(type);
@@ -297,9 +318,265 @@ export async function ensureProjectArtifacts(
       });
     }
 
-    return [...byType.values()].sort(
-      (a, b) => artifactTypeOrder(a.type) - artifactTypeOrder(b.type),
+    const all = await tx
+      .select()
+      .from(artifacts)
+      .where(and(eq(artifacts.projectId, projectId), isNull(artifacts.deletedAt)));
+    return all.sort(compareArtifacts);
+  });
+}
+
+/** Canonical order: type registry order, then instance key (singletons first). */
+function compareArtifacts(a: Artifact, b: Artifact): number {
+  const byType = artifactTypeOrder(a.type) - artifactTypeOrder(b.type);
+  if (byType !== 0) return byType;
+  return (a.key ?? "").localeCompare(b.key ?? "");
+}
+
+// ---------------------------------------------------------------------------
+// syncCompositionArtifacts
+// ---------------------------------------------------------------------------
+
+export interface SyncCompositionsResult {
+  /** New `page.composition` instances created (status `empty`, keyed). */
+  created: Artifact[];
+  /**
+   * Existing instances whose page left the approved sitemap: marked
+   * `outdated` + derived task "página fuera del sitemap". NEVER deleted —
+   * the system marks, it never destroys (§8.4).
+   */
+  orphaned: Artifact[];
+  /**
+   * The legacy keyless singleton (pre multi-instance model), re-keyed to the
+   * home page when present; null when there was none.
+   */
+  migratedLegacyId: string | null;
+  /** All current (non-deleted) `page.composition` instances, sorted by key. */
+  compositions: Artifact[];
+}
+
+/**
+ * Derives the per-page `page.composition` artifacts from the APPROVED
+ * `spec.sitemap` (§7.4: one composition artifact per sitemap page, keyed by
+ * page path — `home`, `servicios`, `legal/terms`, …).
+ *
+ * Rules, by construction:
+ * - Missing pages get a NEW artifact: status `empty`, `key` = page path,
+ *   `label` = "Composición: <título>", plus its §8.4 edges
+ *   (sitemap/tokens/cms → page.*; page.* → release).
+ * - Pages REMOVED from the sitemap never lose their artifact: it is marked
+ *   `outdated` with a derived task "página fuera del sitemap" (marks, never
+ *   destroys). Re-validating or re-approving clears the flag as usual.
+ * - The legacy keyless singleton (model v1, payload `{ pages: [...] }`)
+ *   migrates its role: it becomes the HOME page composition (re-keyed). If it
+ *   carries sealed content in the old schema it is marked `outdated` with a
+ *   migration task — its history stays readable; the generator skips sealed
+ *   payloads whose schemaVersion doesn't match and falls back to the scaffold.
+ * - Idempotent; every mutation is audited.
+ */
+export async function syncCompositionArtifacts(
+  projectId: string,
+  actor: HumanActor,
+): Promise<SyncCompositionsResult> {
+  assertEditor(actor, "sincronizar composiciones de página");
+  const definition = pageCompositionDefinition;
+  const db = getDb();
+  return db.transaction(async (tx) => {
+    const projectRows = await tx
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, projectId), isNull(projects.deletedAt)))
+      .limit(1);
+    const project = projectRows[0];
+    if (!project) {
+      throw new ArtifactDomainError("PROJECT_NOT_FOUND", "El proyecto no existe.");
+    }
+
+    const existing = await tx
+      .select()
+      .from(artifacts)
+      .where(and(eq(artifacts.projectId, projectId), isNull(artifacts.deletedAt)));
+    const singletonByType = new Map(
+      existing.filter((artifact) => artifact.key == null).map((artifact) => [artifact.type, artifact]),
     );
+
+    // --- approved sitemap (sealed version) ---------------------------------
+    const sitemapArtifact = singletonByType.get("spec.sitemap");
+    const sitemapApproved =
+      sitemapArtifact != null &&
+      (sitemapArtifact.status === "approved" || sitemapArtifact.status === "locked") &&
+      sitemapArtifact.currentVersion > 0;
+    if (!sitemapArtifact || !sitemapApproved) {
+      throw new ArtifactDomainError(
+        "SITEMAP_NOT_APPROVED",
+        "Las composiciones de página se derivan del sitemap APROBADO; aprueba «Sitemap» primero.",
+      );
+    }
+    const sealedRows = await tx
+      .select({ payload: artifactVersions.payload })
+      .from(artifactVersions)
+      .where(
+        and(
+          eq(artifactVersions.artifactId, sitemapArtifact.id),
+          eq(artifactVersions.version, sitemapArtifact.currentVersion),
+        ),
+      )
+      .limit(1);
+    if (!sealedRows[0]) {
+      throw new ArtifactDomainError(
+        "VERSION_NOT_FOUND",
+        `No existe la versión sellada v${sitemapArtifact.currentVersion} del sitemap.`,
+      );
+    }
+    const sitemap = specSitemapPayloadSchema.parse(sealedRows[0].payload);
+    const flatPages = flattenSitemap(sitemap.pages);
+    const titleByKey = new Map(flatPages.map((page) => [page.pagePath, page.title]));
+    const homeKey = flatPages.find((page) => page.path === "/")?.pagePath ?? flatPages[0]?.pagePath;
+
+    const compositionsByKey = new Map(
+      existing
+        .filter((artifact) => artifact.type === definition.type && artifact.key != null)
+        .map((artifact) => [artifact.key as string, artifact]),
+    );
+
+    // --- legacy keyless singleton → home composition ------------------------
+    let migratedLegacyId: string | null = null;
+    const legacy = existing.find(
+      (artifact) => artifact.type === definition.type && artifact.key == null,
+    );
+    if (legacy && homeKey && !compositionsByKey.has(homeKey)) {
+      const updated = await tx
+        .update(artifacts)
+        .set({
+          key: homeKey,
+          label: pageCompositionLabel(titleByKey.get(homeKey) ?? homeKey),
+          updatedAt: new Date(),
+        })
+        .where(eq(artifacts.id, legacy.id))
+        .returning();
+      const migrated = updated[0];
+      compositionsByKey.set(homeKey, migrated);
+      migratedLegacyId = migrated.id;
+      // Old-schema content needs a human migration pass: mark, never rewrite.
+      if (migrated.status !== "empty" && migrated.schemaVersion !== definition.schemaVersion) {
+        if (!migrated.outdated) {
+          await tx
+            .update(artifacts)
+            .set({ outdated: true, updatedAt: new Date() })
+            .where(eq(artifacts.id, migrated.id));
+          migrated.outdated = true;
+        }
+        await openDerivedTask(tx, {
+          projectId,
+          title: `Migrar «${displayLabel(migrated)}» al esquema de composición v${definition.schemaVersion} (Data de Puck)`,
+          artifactId: migrated.id,
+          assigneeId: migrated.ownerId,
+          dedupeKey: outdatedTaskKey(migrated.id),
+        });
+      }
+      await writeAudit(tx, {
+        workspaceId: project.workspaceId,
+        projectId,
+        actorId: actor.id,
+        action: "artifact.composition_legacy_migrated",
+        entityType: "artifact",
+        entityId: migrated.id,
+        detail: { key: homeKey, fromSchemaVersion: legacy.schemaVersion },
+      });
+    }
+
+    // --- create missing instances + their §8.4 edges -------------------------
+    const upstreamIds = definition.dependsOn
+      .map((type) => singletonByType.get(type)?.id)
+      .filter((id): id is string => id != null);
+    const releaseArtifact = singletonByType.get("release");
+
+    const created: Artifact[] = [];
+    for (const page of flatPages) {
+      const existingInstance = compositionsByKey.get(page.pagePath);
+      if (existingInstance) {
+        // Keep the label honest when the page title changed in the sitemap.
+        const label = pageCompositionLabel(page.title);
+        if (existingInstance.label !== label) {
+          await tx
+            .update(artifacts)
+            .set({ label, updatedAt: new Date() })
+            .where(eq(artifacts.id, existingInstance.id));
+          existingInstance.label = label;
+        }
+        continue;
+      }
+      const inserted = await tx
+        .insert(artifacts)
+        .values({
+          id: newId.artifact(),
+          projectId,
+          type: definition.type,
+          schemaVersion: definition.schemaVersion,
+          status: "empty",
+          key: page.pagePath,
+          label: pageCompositionLabel(page.title),
+        })
+        .returning();
+      const instance = inserted[0];
+      compositionsByKey.set(page.pagePath, instance);
+      created.push(instance);
+
+      for (const upstreamId of upstreamIds) {
+        await tx
+          .insert(artifactDependencies)
+          .values({ fromArtifactId: instance.id, toArtifactId: upstreamId })
+          .onConflictDoNothing();
+      }
+      if (releaseArtifact) {
+        // §8.4: page.*.composition → release.*
+        await tx
+          .insert(artifactDependencies)
+          .values({ fromArtifactId: releaseArtifact.id, toArtifactId: instance.id })
+          .onConflictDoNothing();
+      }
+    }
+
+    // --- pages removed from the sitemap: mark, never destroy ----------------
+    const orphaned: Artifact[] = [];
+    for (const [key, instance] of compositionsByKey) {
+      if (titleByKey.has(key)) continue;
+      if (!instance.outdated) {
+        await tx
+          .update(artifacts)
+          .set({ outdated: true, updatedAt: new Date() })
+          .where(eq(artifacts.id, instance.id));
+        instance.outdated = true;
+      }
+      orphaned.push(instance);
+      await openDerivedTask(tx, {
+        projectId,
+        title: `Página fuera del sitemap: «${displayLabel(instance)}» (${key}) ya no está en el sitemap aprobado — revalida o restaura la página`,
+        artifactId: instance.id,
+        assigneeId: instance.ownerId,
+        dedupeKey: outdatedTaskKey(instance.id),
+      });
+    }
+
+    if (created.length > 0 || orphaned.length > 0 || migratedLegacyId != null) {
+      await writeAudit(tx, {
+        workspaceId: project.workspaceId,
+        projectId,
+        actorId: actor.id,
+        action: "project.compositions_synced",
+        entityType: "project",
+        entityId: projectId,
+        detail: {
+          sitemapVersion: sitemapArtifact.currentVersion,
+          createdKeys: created.map((artifact) => artifact.key),
+          orphanedKeys: orphaned.map((artifact) => artifact.key),
+          migratedLegacyId,
+        },
+      });
+    }
+
+    const compositions = [...compositionsByKey.values()].sort(compareArtifacts);
+    return { created, orphaned, migratedLegacyId, compositions };
   });
 }
 
@@ -334,7 +611,14 @@ export async function saveDraft(
 
     const updated = await tx
       .update(artifacts)
-      .set({ draftPayload: validated, status: "draft", updatedAt: new Date() })
+      .set({
+        draftPayload: validated,
+        status: "draft",
+        // The draft was just validated against the CURRENT schema: keep the
+        // row's schemaVersion honest (legacy rows upgrade on their next edit).
+        schemaVersion: definition.schemaVersion,
+        updatedAt: new Date(),
+      })
       .where(eq(artifacts.id, artifactId))
       .returning();
 
@@ -381,7 +665,7 @@ export async function submitForReview(artifactId: string, actor: HumanActor): Pr
 
     await openDerivedTask(tx, {
       projectId: project.id,
-      title: `Revisar «${definition.label}»`,
+      title: `Revisar «${displayLabel(artifact)}»`,
       artifactId,
       assigneeId: artifact.ownerId,
       dedupeKey: reviewTaskKey(artifactId),
@@ -508,10 +792,9 @@ export async function approve(
           .where(eq(artifacts.id, dependent.id));
       }
       outdatedDependentIds.push(dependent.id);
-      const dependentLabel = getArtifactTypeOrNull(dependent.type)?.label ?? dependent.type;
       await openDerivedTask(tx, {
         projectId: project.id,
-        title: `Re-validar «${dependentLabel}»: «${definition.label}» tiene nueva versión aprobada (v${newVersionNumber})`,
+        title: `Re-validar «${displayLabel(dependent)}»: «${displayLabel(artifact)}» tiene nueva versión aprobada (v${newVersionNumber})`,
         artifactId: dependent.id,
         assigneeId: dependent.ownerId,
         dedupeKey: outdatedTaskKey(dependent.id),
@@ -715,10 +998,9 @@ export async function unlockArtifact(artifactId: string, actor: HumanActor): Pro
           .where(eq(artifacts.id, dependent.id));
       }
       outdatedDependentIds.push(dependent.id);
-      const dependentLabel = getArtifactTypeOrNull(dependent.type)?.label ?? dependent.type;
       await openDerivedTask(tx, {
         projectId: project.id,
-        title: `Re-validar «${dependentLabel}»: «${definition.label}» fue desbloqueado para edición`,
+        title: `Re-validar «${displayLabel(dependent)}»: «${displayLabel(artifact)}» fue desbloqueado para edición`,
         artifactId: dependent.id,
         assigneeId: dependent.ownerId,
         dedupeKey: outdatedTaskKey(dependent.id),
@@ -813,13 +1095,14 @@ export async function getProjectArtifacts(projectId: string): Promise<ProjectArt
       return {
         artifact,
         definition,
-        label: definition?.label ?? artifact.type,
+        // Keyed instances carry their own label ("Composición: Servicios").
+        label: artifact.label ?? definition?.label ?? artifact.type,
         phase: definition?.phase ?? null,
         dependsOnIds: dependsOn.map((edge) => edge.toArtifactId),
         dependentIds: dependents.map((edge) => edge.fromArtifactId),
       };
     })
-    .sort((a, b) => artifactTypeOrder(a.artifact.type) - artifactTypeOrder(b.artifact.type));
+    .sort((a, b) => compareArtifacts(a.artifact, b.artifact));
 }
 
 export interface ComputedDiff {
@@ -914,22 +1197,31 @@ function satisfiesGate(artifact: Artifact): boolean {
 /**
  * Cockpit phase gates (§8.5): groups project artifacts by phase; a phase is
  * closable when all its required artifacts are approved without `outdated`.
+ *
+ * Multi-instance types (`page.composition`) gate over ALL their instances:
+ * the type is satisfied when at least one instance exists and EVERY instance
+ * passes (approved/locked, not outdated). Zero instances = pending (the
+ * sitemap has not been synced yet).
  */
 export async function getPhaseGates(projectId: string): Promise<PhaseGate[]> {
   const projectArtifacts = await getProjectArtifacts(projectId);
-  const byType = new Map(projectArtifacts.map((item) => [item.artifact.type, item]));
+  const byType = new Map<string, ProjectArtifact[]>();
+  for (const item of projectArtifacts) {
+    const list = byType.get(item.artifact.type) ?? [];
+    list.push(item);
+    byType.set(item.artifact.type, list);
+  }
 
   return PROJECT_PHASES.map(({ key }) => {
     const phaseTypes = ARTIFACT_TYPE_KEYS.filter(
       (type) => artifactTypeRegistry[type].phase === key,
     );
-    const phaseArtifacts = phaseTypes
-      .map((type) => byType.get(type))
-      .filter((item): item is ProjectArtifact => item != null);
+    const phaseArtifacts = phaseTypes.flatMap((type) => byType.get(type) ?? []);
     const requiredTypes = phaseTypes.filter((type) => artifactTypeRegistry[type].requiredForGate);
     const pendingTypes = requiredTypes.filter((type) => {
-      const item = byType.get(type);
-      return !item || !satisfiesGate(item.artifact);
+      const items = byType.get(type) ?? [];
+      if (items.length === 0) return true;
+      return !items.every((item) => satisfiesGate(item.artifact));
     });
 
     return {

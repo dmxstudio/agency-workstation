@@ -187,6 +187,17 @@ export const artifacts = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     /** Artifact type key, e.g. "spec.sitemap", "content.page.home". */
     type: text("type").notNull(),
+    /**
+     * Instance key for multi-instance types (§8.1 `page.*`): the page path
+     * for `page.composition` (e.g. "servicios", "legal/terms"). NULL for
+     * singleton types. Unique per (project, type) among non-deleted rows.
+     */
+    key: text("key"),
+    /**
+     * Human label for keyed instances (e.g. "Composición: Servicios").
+     * NULL → the UI falls back to the type definition label.
+     */
+    label: text("label"),
     /** Version of the Zod payload schema this artifact conforms to. */
     schemaVersion: text("schema_version").notNull(),
     status: artifactStatusEnum("status").notNull().default("empty"),
@@ -213,6 +224,9 @@ export const artifacts = pgTable(
   (table) => [
     index("artifacts_project_id_idx").on(table.projectId),
     index("artifacts_project_id_type_idx").on(table.projectId, table.type),
+    uniqueIndex("artifacts_project_id_type_key_unique")
+      .on(table.projectId, table.type, table.key)
+      .where(sql`${table.key} is not null and ${table.deletedAt} is null`),
   ],
 );
 

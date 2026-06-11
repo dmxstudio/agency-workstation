@@ -15,6 +15,13 @@
       "when": 1781171580267,
       "tag": "0001_useful_darkhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781176727939,
+      "tag": "0002_composition_keys",
+      "breakpoints": true
     }
   ]
 }

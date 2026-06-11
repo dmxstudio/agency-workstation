@@ -25,7 +25,7 @@ Credenciales demo (las imprime también el seed):
 | Contraseña | `demo1234`                     |
 | Workspace  | Demo Agency (`/w/demo`)        |
 
-El seed crea el proyecto **"Sitio Corporativo Acme"** con el grafo de 8 artefactos instanciado y una historia realista producida por los servicios de dominio reales: `spec.intake` aprobado en **v2** (re-scope que añade la página de carreras), `spec.strategy` marcado `outdated` por esa propagación (§8.4) y **re-validado como v2**, `spec.sitemap` aprobado (6 páginas, con un borrador previo al re-scope en su historial), `design.tokens`, `cms.collections` (3 colecciones), `content.page` (copy/SEO de 3 páginas) y `page.composition` (con un binding CMS) aprobados, `release` vacío, una tarea manual abierta y el feed de actividad/audit completo.
+El seed crea el proyecto **"Sitio Corporativo Acme"** con el grafo de 8 artefactos instanciado y una historia realista producida por los servicios de dominio reales: `spec.intake` aprobado en **v2** (re-scope que añade la página de carreras), `spec.strategy` marcado `outdated` por esa propagación (§8.4) y **re-validado como v2**, `spec.sitemap` aprobado (6 páginas, con un borrador previo al re-scope en su historial), `design.tokens`, `cms.collections` (3 colecciones) y `content.page` (copy/SEO de 3 páginas) aprobados, `release` vacío, una tarea manual abierta y el feed de actividad/audit completo. Las composiciones (`page.composition`, **un artefacto por página** del sitemap aprobado) quedan con historia por página: «inicio» aprobada v1 (el scaffold del Generator sellado como composición de portada), «servicios» aprobada v1 (Data de Puck con bindings CMS), «nosotros» con un borrador sin aprobar y el resto `empty`.
 
 Los **tres artefactos que requiere el Generator** (`spec.sitemap`, `cms.collections`, `design.tokens`) quedan aprobados: el proyecto demo es generable nada más sembrar (ver la sección Generator).
 
@@ -40,11 +40,12 @@ Hecho:
 - **Spec OS** (`src/modules/spec-os`) — formularios tipados de las 6 secciones de spec.
 - **Pantallas** — login/registro/onboarding, home de workspace con tabla de proyectos, **Project Cockpit** (stepper de fases con gates, artefactos por fase, tareas, feed de actividad) y **editor de artefactos** con tabs Editar/Diff/Historial y barra de acciones por estado y rol.
 - **Design system** (`src/ui`) — tokens §11.4: monocromo + acentos semánticos, violeta reservado a actividad de agentes, mono para IDs/versiones/diffs.
-- **Generator** (`src/modules/generator` + pantalla `/w/<slug>/p/<id>/generator`) — generación y regeneración parcial de proyectos reales desde los artefactos aprobados (ver sección siguiente).
+- **Generator** (`src/modules/generator` + pantalla `/w/<slug>/p/<id>/generator`) — generación y regeneración parcial de proyectos reales desde los artefactos aprobados (ver sección Generator).
+- **Visual Studio + CMS** (`src/modules/studio` + pantallas `/studio`, `/studio/<página>` y `/cms`) — editor Puck embebido con el ciclo de aprobación §13 y vistas del modelo de contenido (ver sección Studio y CMS).
 
 Pendiente (fases posteriores de la spec):
 
-- **Studio, Review, Deploy** — placeholders "Próximamente" en la navegación (Puck como Studio embebido en la plataforma llegará aquí; el proyecto generado ya trae su propio editor Puck standalone).
+- **Review, Deploy** — placeholders "Próximamente" en la navegación.
 - **Agent Runtime** (`agent_runs` es solo un placeholder en el schema; no hay flujo propose→diff→approve de agentes).
 - **Cierre de gates de fase** (el stepper marca "cerrable" pero no existe la acción de cierre con lock masivo + avance de `currentPhase`).
 - **Clerk** como proveedor de auth (llegará detrás del mismo adapter, §18.6).
@@ -73,6 +74,18 @@ npm run dev              # http://localhost:4000  (sitio publicado, /admin de Pa
 
 **Demo end-to-end:** con la demo sembrada, `npx tsx scripts/e2e-generator.ts` genera el proyecto demo, demuestra el ciclo de conflictos §18.2 (edición humana en zona codegen + campo bindeado eliminado por una v2 de `cms.collections` → `status=conflicts` → resolución → `success`) y deja el historial limpio. El contrato completo del template (ownership por archivo, comandos, decisiones) está en [`templates/project-base/TEMPLATE.md`](templates/project-base/TEMPLATE.md).
 
+## Studio y CMS (§7.4, §7.6, §11.2)
+
+El **Visual Studio** compone las páginas del sitemap aprobado con el registry gobernado de 34 componentes (sin CSS libre: toda opción visual es una variante enumerada). Cada página es un artefacto `page.composition` propio (key = path de la página) con el MISMO ciclo §13 que el resto de la spec: el Studio jamás crea un camino paralelo de aprobación.
+
+- **`/w/<slug>/p/<id>/studio`** — índice de páginas: estado por composición (StatusPill + flags), versión sellada, nº de secciones, peso del Data JSON, y el botón «Sincronizar páginas desde sitemap» (deriva un artefacto por página del sitemap APROBADO; marca huérfanas, nunca borra — §8.4).
+- **`/w/<slug>/p/<id>/studio/<página>`** — editor Puck (`@puckeditor/core`, misma versión pineada que el template): canvas con los tokens del proyecto inyectados en el iframe, preview responsive (375/768/1280), autosave de borrador con issues de validación Zod, diff estructural draft↔aprobada (las secciones se alinean por su `props.id` estable), bindings CMS validados contra `cms.collections` aprobado, y el panel «Aprobación» (enviar a revisión / aprobar / rechazar / revalidar — solo humanos con rol; aprobar sella versión inmutable y el canvas pasa a read-only).
+- **`/w/<slug>/p/<id>/cms`** — vista read-only del modelo de contenido aprobado + mapa de bindings (qué página/sección/prop consume qué colección/campo, con conflictos marcados) + cómo correr el CMS real del proyecto generado.
+
+**Compatibilidad de render (contrato sagrado):** el Data JSON que produce el Studio renderiza idéntico en el renderer del template — mismos nombres de componente, mismas props, mismo formato de bindings. La fuente de verdad del shape es `templates/project-base/src/puck/`; el espejo de plataforma vive en `src/modules/studio/registry` (reglas de sincronización en su `README.md`) y el contrato lo verifica `scripts/e2e-studio.ts` en cada ejecución.
+
+**Demo end-to-end del paso 4:** con la demo sembrada, `npx tsx scripts/e2e-studio.ts` añade una sección a la composición de «Servicios» tal y como la crearía el canvas (defaultProps del registry), muestra el diff, la aprueba (v2), regenera el proyecto, hace `seed + build + next start` DENTRO del proyecto generado y verifica con curl que `/servicios` sirve la sección nueva y `/` la composición aprobada de «inicio». Nota: cada ejecución de los e2e deja flags `outdated` legítimos (propagación §8.4 de las versiones que aprueban); para una demo impoluta, revalida desde el Cockpit o re-siembra desde cero.
+
 ## Postgres real
 
 Por defecto no hay nada que configurar (PGlite embebido). Para usar un Postgres de verdad, define `DATABASE_URL` (por ejemplo en `.env.local`, ver `.env.example`):
@@ -93,5 +106,7 @@ Con la variable definida, `npm run db:migrate`, `npm run db:seed` y la app usan 
 | `npm run db:seed`                     | Datos demo (idempotente)                                         |
 | `npm run lint`                        | ESLint                                                           |
 | `npx tsx scripts/e2e-generator.ts`    | Genera el proyecto demo + drill de conflictos §18.2 (re-runnable) |
+| `npx tsx scripts/e2e-studio.ts`       | Drill del paso 4: composición→diff→aprobación→regeneración→el sitio generado sirve el cambio (re-runnable) |
 | `npx tsx scripts/smoke-artifacts.ts`  | Smoke del dominio de artefactos                                  |
 | `npx tsx scripts/smoke-generator.ts`  | Smoke del módulo generator (aislado, se limpia solo)             |
+| `npx tsx src/modules/studio/registry/smoke-render.mts` | Smoke de render del registry del Studio (RSC)   |

@@ -16,7 +16,7 @@
     {
       "name": "generated-acme",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", ".data/projects/prj_dnwjvcs7xacb"],
+      "runtimeArgs": ["run", "dev", "--prefix", ".data/projects/prj_hy9bz30s4t96"],
       "port": 4000
     }
   ]

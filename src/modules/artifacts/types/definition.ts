@@ -62,6 +62,14 @@ export interface ArtifactTypeDefinition<TPayload = unknown> {
   readonly dependsOn: readonly ArtifactTypeKey[];
   /** Whether the phase gate requires this artifact approved (§8.5). MVP: all true. */
   readonly requiredForGate: boolean;
+  /**
+   * Multi-instance type (§8.1 `page.*`): instances are keyed per row
+   * (`artifacts.key`, e.g. the page path for `page.composition`).
+   * `ensureProjectArtifacts` does NOT instantiate these as singletons;
+   * `syncCompositionArtifacts` derives them from the approved sitemap.
+   * Omitted/false = singleton (one row per project and type).
+   */
+  readonly multiInstance?: boolean;
   /** Zod schema validated on EVERY payload write (drafts and versions). */
   readonly payloadSchema: z.ZodType<TPayload>;
 }

@@ -55,7 +55,7 @@ en la siguiente regeneración y bloquea solo ese archivo. Todos llevan header
 | `src/generated/tokens.css` | `design.tokens` | variables CSS de marca; el registry las consume vía utilities `*-brand-*` mapeadas en `src/app/(site)/globals.css` |
 | `src/generated/navigation.ts` | `spec.sitemap` | `mainNav`, `footerColumns`, `legalText`; defaultProps de Navbar/Footer para inserciones nuevas |
 | `src/collections/*.ts` (incl. `index.ts`) | `cms.collections` | un archivo por colección + barrel; `testimonials.ts`/`posts.ts` son el ejemplo de la forma emitida. Tras regenerar colecciones, correr `npm run generate:types` (los literales `relationTo` tipan contra la unión de `payload-types.ts`) |
-| `src/seed/content.json` | `spec.sitemap` + `cms.collections` + `content.page` | fixtures en la forma `SeedContent` de `scripts/seed.mts`: `collections` (3 documentos de ejemplo por colección; los campos `relation` se omiten — enlazar documentos es tarea humana en el CMS) y `pages` (una página Puck publicada por entrada del sitemap, compuesta desde el copy aprobado). Se cargan con `npm run seed`. Sintaxis de binding: `{ "$seedRef": { "collection": "posts", "index": 0 } }` → `{ collection, docId, ...snapshot }` |
+| `src/seed/content.json` | `spec.sitemap` + `cms.collections` + `content.page` + `page.composition` (por página) | fixtures en la forma `SeedContent` de `scripts/seed.mts`: `collections` (3 documentos de ejemplo por colección; los campos `relation` se omiten — enlazar documentos es tarea humana en el CMS) y `pages` (una página Puck publicada por entrada del sitemap: el Data del artefacto `page.composition` APROBADO de esa página cuando existe, scaffold desde el copy aprobado si no). Se cargan con `npm run seed`. Sintaxis de binding: `{ "$seedRef": { "collection": "posts", "index": 0 } }` → `{ collection, docId, ...snapshot }` |
 | `src/payload-types.ts` | config de Payload | lo regenera `npm run generate:types`, no la plataforma; tratarlo igualmente como archivo cerrado |
 | `package.json` → campo `name` | nombre del proyecto (slug) | escrito UNA sola vez en la generación inicial (JSON-merge, sin entrada en el manifest); después el archivo entero es territorio del proyecto: la regeneración nunca lo lee ni lo reescribe |
 
@@ -78,6 +78,12 @@ Todo lo demás. En particular:
 - `src/puck/**` — registry de 34 secciones gobernadas (sin CSS libre; toda
   opción visual es variante enumerada). La extensión del registry es tarea de
   developer (o, post-MVP, de la skill `extend-component-variant`).
+  **Este directorio es la fuente de verdad del shape**: el Visual Studio de la
+  plataforma lo espeja en `src/modules/studio/registry` (mismos nombres Puck,
+  mismas props/fields/defaultProps, mismo formato de bindings — checklist de
+  sincronización en su `README.md`). El contrato de compatibilidad de render
+  lo verifica `scripts/e2e-studio.ts` de la plataforma: cualquier cambio aquí
+  debe portarse al espejo en el mismo cambio.
 - `src/lib/**` — Payload Local API, resolución de bindings en render,
   acciones del editor, gate de `EDIT_TOKEN`, colecciones base (`users`,
   `pages`).
