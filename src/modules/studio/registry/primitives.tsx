@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
 
 /**
  * COPIA SINCRONIZADA del template — fuente de verdad:
@@ -59,18 +59,21 @@ export const widthClass: Record<Width, string> = {
 };
 
 export function SectionShell({
+  id,
   tone = "light",
   padding = "normal",
   width = "wide",
   children,
 }: {
+  /** Puck block id — DOM id of the section (review anchors `#<sectionId>`). */
+  id?: string;
   tone?: Tone;
   padding?: Padding;
   width?: Width;
   children: ReactNode;
 }) {
   return (
-    <section className={`${toneClass[tone]} ${paddingClass[padding]}`}>
+    <section id={id} className={`${toneClass[tone]} ${paddingClass[padding]}`}>
       <div className={`mx-auto px-6 ${widthClass[width]}`}>{children}</div>
     </section>
   );
@@ -186,3 +189,37 @@ export const buttonStyleField = {
     { label: "Ghost", value: "ghost" },
   ],
 };
+
+/** Minimal shape of a Puck component config this wrapper cares about. */
+type AnchorableComponent = {
+  render: (props: never) => ReactNode;
+};
+
+/**
+ * Review anchors: every section renders its Puck block id as the `id`
+ * attribute of its ROOT element, so review comments can deep-link to a
+ * section via URL hash (`#<blockId>`). Single change point for the whole
+ * registry: wraps each component's render and injects the block id into the
+ * root element — DOM roots (header/footer/div/p…) receive it directly;
+ * SectionShell forwards its `id` prop to the underlying <section>.
+ */
+export function withBlockAnchors<T extends Record<string, AnchorableComponent>>(
+  components: T,
+): T {
+  const anchored: Record<string, AnchorableComponent> = {};
+  for (const [name, component] of Object.entries(components)) {
+    const render = component.render;
+    anchored[name] = {
+      ...component,
+      render: (props) => {
+        const node = render(props);
+        const id = (props as { id?: string }).id;
+        if (id && isValidElement(node)) {
+          return cloneElement(node as ReactElement<{ id?: string }>, { id });
+        }
+        return node;
+      },
+    };
+  }
+  return anchored as T;
+}

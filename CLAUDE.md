@@ -9,9 +9,10 @@
 - `npm run dev` — dev server (http://localhost:3000)
 - `npm run build` — build de producción
 - `npm run db:migrate` — aplica el schema a la DB (PGlite local por defecto)
-- `npm run db:seed` — datos demo (workspace + proyecto con los artefactos requeridos por el Generator aprobados y composiciones por página con historia)
-- `npx tsx scripts/e2e-generator.ts` — genera el proyecto demo + drill de conflictos §18.2
-- `npx tsx scripts/e2e-studio.ts` — drill del paso 4: edición de composición → diff → aprobación → regeneración → el sitio generado sirve el cambio (incluye el contrato de compatibilidad Studio↔template)
+- `npm run db:seed` — datos demo (workspace + proyecto con TODAS las composiciones del sitemap aprobadas, release v1 SELLADO y una ronda de review abierta cuyo link imprime al final; nunca despliega). PGlite es de un solo proceso: parar el dev server antes de cualquier script `tsx` que toque la DB.
+- `npx tsx scripts/e2e-generator.ts` — genera el proyecto demo + drill de conflictos §18.2 (OJO: re-crea el repo demo y destruye los tags `release-N`; re-sembrar después)
+- `npx tsx scripts/e2e-studio.ts` — drill del paso 4: edición de composición → diff → aprobación → regeneración → el sitio generado sirve el cambio (incluye el contrato de compatibilidad Studio↔template; misma advertencia: re-crea el repo demo)
+- `npx tsx scripts/e2e-deploy-review.ts` — drill del paso 5: checklist §7.8 → release sellado → deploy(preview) → páginas servidas con anclas → ronda por token → comentario→tarea→resolver → aprobación de cliente → cerrar → rollback → stop (mata todo lo que arranca)
 
 ## Stack y decisiones locales
 
@@ -37,7 +38,22 @@ src/modules/studio/          Visual Studio (§7.4): registry/ (espejo del regist
                              editor/ (island <Puck>, panel de aprobación §13, diff, autosave).
                              Las pantallas Studio (índice de páginas) y CMS (read-only +
                              mapa de bindings) viven en src/app y componen artifacts+studio
-src/modules/{review,deploy,agents}/  futuros — NO implementar sin volver a la spec
+src/modules/review/          review & release (§7.7, §7.8, §8.5, §12.2): checklist de release,
+                             releases = versiones INMUTABLES del artefacto `release` selladas vía
+                             artifacts (+ git tag `release-N` en el repo generado), rondas de
+                             review de cliente por LINK CON TOKEN (sin cuenta, R8), comentarios
+                             con hilos anclados a página/sección, aprobaciones de CLIENTE (tabla
+                             propia `client_approvals`; jamás transicionan artefactos internos)
+                             y tareas derivadas de comentarios abiertos
+src/modules/deploy/         Deploy & Release local (§7.8): interfaz DeployProvider
+                             (provider.ts — Vercel llegará detrás de la MISMA interfaz,
+                             patrón adapter §18.6), provider local (builds inmutables por
+                             release vía `git archive` del tag en .data/deploys/, slots
+                             production :4100 / preview :4200 con `next start` detached +
+                             pidfile, status contra la REALIDAD), service.ts (filas
+                             `deployments` + audit alrededor del provider; solo releases
+                             SELLADOS se despliegan) y actions.ts (sesión + rol)
+src/modules/agents/          futuro — NO implementar sin volver a la spec
 src/ui/                      design system de la plataforma (tokens §11.4 + componentes)
 src/app/                     rutas App Router (pantallas componen módulos; lógica vive en módulos)
 templates/project-base/      template del proyecto generado (Next+Payload+Puck, autocontenido,
@@ -45,7 +61,14 @@ templates/project-base/      template del proyecto generado (Next+Payload+Puck, 
 scripts/                     migrate.ts, seed.ts, e2e-generator.ts, e2e-studio.ts, smoke-*.ts
 ```
 
-Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts`, `generator → artifacts` y `studio → artifacts` (consumen los tipos Zod, los bindings compartidos y las versiones aprobadas). `studio ↛ generator`: lo que ambos derivan de la misma spec (tokens CSS, defaults de navegación) se duplica sincronizado y documentado — el contrato lo verifica `scripts/e2e-studio.ts`.
+Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts`, `generator → artifacts`, `studio → artifacts` (consumen los tipos Zod, los bindings compartidos y las versiones aprobadas) y `review → artifacts + generator` (sella releases vía el ciclo de artifacts y valida/tagea el repo generado: requirements, manifest, git tag). `studio ↛ generator`: lo que ambos derivan de la misma spec (tokens CSS, defaults de navegación) se duplica sincronizado y documentado — el contrato lo verifica `scripts/e2e-studio.ts`. `deploy ↛ artifacts/generator/review`: el deploy recibe coordenadas planas (`releaseNumber`, `gitTag`), valida el payload sellado con un schema Zod mínimo propio y duplica sincronizada la resolución de paths del generator (documentado en `deploy/paths.ts`).
+
+## Deploy local (§7.8) — decisiones
+
+- **DeployProvider** es la interfaz; el provider local es un detalle. Reglas del contrato: build inmutable por release (un build sellado jamás se reconstruye; tag movido sobre build sellado = error), `status()` reporta realidad (pid vivo + identidad por cwd + probe HTTP), rollback = `deploy(releaseAnterior, slot)`, el provider NUNCA toca la DB de la plataforma ni mata procesos ajenos (`PORT_IN_USE` claro).
+- Slots locales: **production `http://localhost:4100`** y **preview `http://localhost:4200`** (envs `DEPLOY_PROD_PORT` / `DEPLOY_PREVIEW_PORT`; base de builds `LOCAL_DEPLOYS_DIR`, por defecto `.data/deploys/`).
+- Gobernanza §13/§19: solo se despliegan releases **sellados** (versión inmutable del artefacto `release`, creada por `createRelease` tras checklist §7.8 en verde + confirmación humana con rol). La aprobación de CLIENTE (§8.5) es un tipo distinto (`client_approvals`) y jamás transiciona artefactos internos; el cliente entra por link con token (`/review/<token>`, fuera del matcher de auth a propósito).
+- La regeneración NO re-copia archivos estáticos del template (territorio humano tras la copia inicial, §18.2): un cambio de template llega a repos existentes re-creándolos o con commit humano dentro del repo generado — no hay historia de «upgrade de template» todavía.
 
 ## Generator: convenciones de ownership (§18.2)
 

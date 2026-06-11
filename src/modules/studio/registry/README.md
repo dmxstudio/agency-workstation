@@ -65,6 +65,12 @@ renderizar.
 4. **`tokensCss`** duplica el mapeo de `renderTokensCss` del generator (la
    regla de límites de módulos impide `studio → generator`). Diferencia única:
    sin header `@generated`. **Si cambia el mapeo allí, cambiarlo aquí.**
+5. **Anclas de review (`withBlockAnchors`) — divergencia CERO.** Cada bloque
+   renderiza su id Puck como atributo `id` del elemento raíz de la sección
+   (anclas de comentarios del review por hash `#<sectionId>`, §7.7). El helper
+   vive en `primitives.tsx` (verbatim en ambos lados) y AMBOS configs envuelven
+   su mapa de componentes con él — mismo wrapper, mismo DOM resultante en el
+   canvas del Studio y en el sitio generado/desplegado.
 
 ## Estilos del canvas (contrato para el editor)
 

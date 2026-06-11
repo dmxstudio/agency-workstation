@@ -46,7 +46,7 @@ export {
   type EngineGenerateResult,
   type EngineRegenerateResult,
 } from "./engine";
-export { gitLog } from "./git";
+export { gitLog, gitTag, gitListTags } from "./git";
 export {
   GENERATION_INPUT_TYPES,
   generateProject,

@@ -4,19 +4,35 @@
     {
       "name": "agency-workstation",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 3000
     },
     {
       "name": "spike-puck",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "spikes/puck", "--", "--port", "3018"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "spikes/puck",
+        "--",
+        "--port",
+        "3018"
+      ],
       "port": 3018
     },
     {
       "name": "generated-acme",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", ".data/projects/prj_hy9bz30s4t96"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        ".data/projects/prj_gdpc9gh0qqnd"
+      ],
       "port": 4000
     }
   ]

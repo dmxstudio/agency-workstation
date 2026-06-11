@@ -22,6 +22,11 @@ import { SESSION_COOKIE } from "@/modules/platform-core/auth/constants";
  *   `/w/[slug]` or `/onboarding`.
  * - `/w/**`, `/onboarding`: require a session cookie; otherwise → `/login`
  *   with the original path in `?next=`.
+ * - `/review/**`: PUBLIC by design and therefore intentionally OUTSIDE the
+ *   matcher — it is the client review surface (§7.7, R8): no account, no
+ *   session; the review token in the URL is the whole credential and every
+ *   read/mutation validates it against the DB in the review module. Do NOT
+ *   add it to the matcher.
  */
 
 const PUBLIC_ROUTES = new Set(["/login", "/register"]);

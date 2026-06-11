@@ -46,11 +46,14 @@ export const specOsFormRegistry: Record<ArtifactTypeKey, SpecOsFormEntry> = {
   },
   release: {
     Form: JsonPayloadForm,
+    // Scaffold del schema 2.0; los releases reales los sella `createRelease`
+    // (módulo review) con el checklist §7.8 en verde.
     createEmptyPayload: () => ({
-      name: "",
-      target: "preview",
-      pages: [],
+      releaseNumber: 1,
+      gitTag: "release-1",
+      versions: { sitemap: 1, cms: 1, content: 0, tokens: 1, compositions: {} },
       checklist: [],
+      notes: "",
     }),
   },
 };

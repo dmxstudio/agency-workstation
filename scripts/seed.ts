@@ -23,24 +23,46 @@
  *       nosotros  draft — unapproved changes (scaffold + extra section), so
  *                 the Studio shows a real pending draft
  *       blog / carreras / contacto stay `empty` (fallback scaffold)
- *   - release           empty (deploy is a future phase)
+ *   - release           SEALED as v1 (see step-5 block below)
  * - One open manual task + the activity/audit feed of the whole story
+ *
+ * STEP 5 (release + client review, §7.7/§7.8) — `ensureReleaseAndReviewRound`
+ * runs on every execution (also when the project already existed) and leaves,
+ * idempotently:
+ *   - EVERY page of the approved sitemap with an approved `page.composition`
+ *     (pending drafts are approved; empty pages get the Generator scaffold
+ *     built from the REAL approved payloads in the DB),
+ *   - the generated repo up to date (generate/regenerate through the real
+ *     Generator service — the deploy provider builds from the git TAG, so the
+ *     repo must incorporate the approved compositions before sealing),
+ *   - the §7.8 release checklist all green,
+ *   - release v1 SEALED for real (immutable version of the `release` artifact
+ *     + git tag `release-1`) via `createRelease`,
+ *   - one OPEN review round («Cliente Acme — ronda 1») with 2 demo client
+ *     comments: one open (its derived task §12.2 is visible in the Cockpit)
+ *     and one already resolved. NO client approval — that moment is left for
+ *     the user to live in /review/<token>.
+ *   - It never deploys: builds take minutes and belong to the user/e2e
+ *     (`npx tsx scripts/e2e-deploy-review.ts` or the Deploy screen).
+ * The review link is printed at the very end of the seed.
  *
  * The three artifacts the Generator REQUIRES (§7.3: spec.sitemap,
  * cms.collections, design.tokens) end up approved, so the demo project is
  * generable right after seeding (see scripts/e2e-generator.ts).
  *
  * Everything flows through the real domain services (`createWorkspace`,
- * `createProject`, `saveDraft`, `submitForReview`, `approve`), so states,
+ * `createProject`, `saveDraft`, `submitForReview`, `approve`,
+ * `createRelease`, `createReviewRequest`, `addClientComment`), so states,
  * sealed versions, derived tasks and audit events are produced by the same
  * code paths the app uses.
  *
- * Idempotency: if the demo project already exists the seed prints the
- * credentials and exits without touching anything. To re-generate from
- * scratch: delete `./.data` and run `npm run db:migrate && npm run db:seed`.
+ * Idempotency: if the demo project already exists the seed only ensures the
+ * step-5 state (no-ops when it is already there) and re-prints credentials +
+ * review link. To re-generate from scratch: delete `./.data` and run
+ * `npm run db:migrate && npm run db:seed`.
  */
 import { randomBytes, scrypt } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
@@ -53,9 +75,9 @@ for (const file of [".env.local", ".env"]) {
 
 import { and, eq, isNull } from "drizzle-orm";
 
-import { getDb } from "../src/db/client";
+import { getDb, type Db } from "../src/db/client";
 import { newId } from "../src/db/ids";
-import { projects, tasks, users, workspaces } from "../src/db/schema";
+import { artifactVersions, projects, tasks, users, workspaces } from "../src/db/schema";
 import {
   approve,
   getProjectArtifacts,
@@ -63,20 +85,53 @@ import {
   submitForReview,
   syncCompositionArtifacts,
   type HumanActor,
+  type ProjectArtifact,
 } from "../src/modules/artifacts/service";
-import type { CmsCollectionsPayload } from "../src/modules/artifacts/types/cms-collections";
-import type { ContentPagePayload } from "../src/modules/artifacts/types/content-page";
-import type { DesignTokensPayload } from "../src/modules/artifacts/types/design-tokens";
+import {
+  cmsCollectionsPayloadSchema,
+  type CmsCollectionsPayload,
+} from "../src/modules/artifacts/types/cms-collections";
+import {
+  contentPagePayloadSchema,
+  type ContentPagePayload,
+} from "../src/modules/artifacts/types/content-page";
+import {
+  designTokensPayloadSchema,
+  type DesignTokensPayload,
+} from "../src/modules/artifacts/types/design-tokens";
 import {
   pageCompositionPayloadSchema,
   type PageCompositionPayload,
 } from "../src/modules/artifacts/types/page-composition";
+import { releasePayloadSchema } from "../src/modules/artifacts/types/release";
+import { getBuildMarkerPath, getReleaseBuildDir } from "../src/modules/deploy";
+import { formatConflict, type Conflict } from "../src/modules/generator/conflicts";
+import { hasManifest } from "../src/modules/generator/engine";
+import { getProjectRepoDir } from "../src/modules/generator/paths";
 import {
   compositionFilePath,
   renderHumanScaffolds,
 } from "../src/modules/generator/render";
+import {
+  generateProject,
+  getGenerations,
+  regenerateProject,
+  type GenerationSummary,
+} from "../src/modules/generator/service";
+import {
+  addClientComment,
+  createRelease,
+  createReviewRequest,
+  listReviewRequests,
+  resolveComment,
+  runReleaseChecklist,
+} from "../src/modules/review/service";
+import {
+  flattenSitemap,
+  specSitemapPayloadSchema,
+  type SpecSitemapPayload,
+} from "../src/modules/artifacts/types/spec-sitemap";
 import type { SpecIntakePayload } from "../src/modules/artifacts/types/spec-intake";
-import type { SpecSitemapPayload } from "../src/modules/artifacts/types/spec-sitemap";
 import type { SpecStrategyPayload } from "../src/modules/artifacts/types/spec-strategy";
 import { logAudit } from "../src/modules/platform-core/audit";
 import { createProject } from "../src/modules/platform-core/projects";
@@ -741,6 +796,363 @@ function nosotrosDraftComposition(): PageCompositionPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Step 5 — release + client review round (§7.7, §7.8, §8.5, §12.2)
+// ---------------------------------------------------------------------------
+
+const DEMO_REVIEW_LABEL = "Cliente Acme — ronda 1";
+const DEMO_CLIENT_NAME = "Laura Gómez";
+
+/** Sealed (immutable) payload of an artifact version, straight from the DB. */
+async function loadSealedPayload(
+  db: Db,
+  artifactId: string,
+  version: number,
+): Promise<unknown> {
+  const rows = await db
+    .select({ payload: artifactVersions.payload })
+    .from(artifactVersions)
+    .where(
+      and(eq(artifactVersions.artifactId, artifactId), eq(artifactVersions.version, version)),
+    )
+    .limit(1);
+  if (!rows[0]) {
+    throw new Error(`No existe la versión sellada v${version} del artefacto ${artifactId}.`);
+  }
+  return rows[0].payload;
+}
+
+function isSealed(item: ProjectArtifact | undefined): item is ProjectArtifact {
+  if (!item) return false;
+  const { status, currentVersion } = item.artifact;
+  return (status === "approved" || status === "locked") && currentVersion > 0;
+}
+
+function failOnConflicts(conflicts: Conflict[]): void {
+  if (conflicts.length === 0) return;
+  throw new Error(
+    `La generación reportó conflictos (§18.2) — resuélvelos desde la pantalla Generator:\n` +
+      conflicts.map((conflict) => `  - ${formatConflict(conflict)}`).join("\n"),
+  );
+}
+
+/**
+ * True when the last generation already consumed the CURRENT sealed versions
+ * of every generator input (singletons + approved per-page compositions) —
+ * used to keep the seed idempotent: re-running it never piles up no-op
+ * `generations` rows.
+ */
+function generationIsCurrent(summary: GenerationSummary, items: ProjectArtifact[]): boolean {
+  const singletonVersion = (type: string): number => {
+    const item = items.find((i) => i.artifact.type === type && i.artifact.key == null);
+    return isSealed(item) ? item.artifact.currentVersion : 0;
+  };
+  for (const type of [
+    "spec.sitemap",
+    "cms.collections",
+    "design.tokens",
+    "content.page",
+  ] as const) {
+    if ((summary.inputVersions[type] ?? 0) !== singletonVersion(type)) return false;
+  }
+  const sealedCompositions = items.filter(
+    (i) => i.artifact.type === "page.composition" && i.artifact.key != null && isSealed(i),
+  );
+  const consumed = summary.compositionVersions ?? {};
+  if (Object.keys(consumed).length !== sealedCompositions.length) return false;
+  return sealedCompositions.every(
+    (i) => consumed[i.artifact.key as string] === i.artifact.currentVersion,
+  );
+}
+
+/**
+ * Leaves the demo project ready for the full step-5 walkthrough, idempotently:
+ * every sitemap page approved → repo regenerated → checklist §7.8 green →
+ * release v1 sealed → open review round with 2 client comments (one open with
+ * its derived task, one resolved) and NO client approval yet. Returns the
+ * round's token so the caller prints the shareable link at the very end.
+ *
+ * It deliberately NEVER deploys (builds take minutes): that is the user's
+ * moment in the Deploy screen, or `npx tsx scripts/e2e-deploy-review.ts`.
+ */
+async function ensureReleaseAndReviewRound(
+  db: Db,
+  workspaceId: string,
+  projectId: string,
+  userId: string,
+): Promise<string> {
+  const actor: HumanActor = { id: userId, role: "admin", workspaceId };
+  console.log("\n— Paso 5: release + ronda de review (idempotente) —");
+
+  // --- (a) every page of the APPROVED sitemap gets an approved composition --
+  const sync = await syncCompositionArtifacts(projectId, actor);
+  if (sync.created.length > 0) {
+    console.log(
+      `page.composition: ${sync.created.length} artefacto(s) sincronizados del sitemap (${sync.created
+        .map((a) => a.key)
+        .join(", ")}).`,
+    );
+  }
+  let items = await getProjectArtifacts(projectId);
+  const singleton = (type: string) =>
+    items.find((i) => i.artifact.type === type && i.artifact.key == null);
+  const sitemapItem = singleton("spec.sitemap");
+  const cmsItem = singleton("cms.collections");
+  const tokensItem = singleton("design.tokens");
+  const contentItem = singleton("content.page");
+  if (!isSealed(sitemapItem) || !isSealed(cmsItem) || !isSealed(tokensItem)) {
+    throw new Error("Paso 5: faltan los inputs aprobados del generator (sitemap/cms/tokens).");
+  }
+  const sitemapPayload = specSitemapPayloadSchema.parse(
+    await loadSealedPayload(db, sitemapItem.artifact.id, sitemapItem.artifact.currentVersion),
+  );
+  const flatPages = flattenSitemap(sitemapPayload.pages);
+
+  // Generator scaffolds for the still-empty pages, rendered from the REAL
+  // approved payloads in the DB (never from this file's fixtures: an existing
+  // demo DB may have evolved past them, e.g. via the e2e drills).
+  let scaffolds: Map<string, string> | null = null;
+  const scaffoldFor = async (slug: string): Promise<PageCompositionPayload> => {
+    if (!scaffolds) {
+      const collections = cmsCollectionsPayloadSchema.parse(
+        await loadSealedPayload(db, cmsItem.artifact.id, cmsItem.artifact.currentVersion),
+      );
+      const tokens = designTokensPayloadSchema.parse(
+        await loadSealedPayload(db, tokensItem.artifact.id, tokensItem.artifact.currentVersion),
+      );
+      const content = isSealed(contentItem)
+        ? contentPagePayloadSchema.parse(
+            await loadSealedPayload(
+              db,
+              contentItem.artifact.id,
+              contentItem.artifact.currentVersion,
+            ),
+          )
+        : null;
+      scaffolds = renderHumanScaffolds({
+        projectName: DEMO_PROJECT_NAME,
+        sitemap: sitemapPayload,
+        collections,
+        tokens,
+        content,
+        compositions: {},
+      });
+    }
+    const raw = scaffolds.get(compositionFilePath(slug));
+    if (!raw) {
+      throw new Error(`El generator no produjo scaffold de composición para «${slug}».`);
+    }
+    return pageCompositionPayloadSchema.parse(JSON.parse(raw));
+  };
+
+  let approvedCount = 0;
+  for (const page of flatPages) {
+    const item = items.find(
+      (i) => i.artifact.type === "page.composition" && i.artifact.key === page.pagePath,
+    );
+    if (!item) {
+      throw new Error(`Paso 5: falta el artefacto page.composition de «${page.pagePath}».`);
+    }
+    const alreadySealed =
+      (item.artifact.status === "approved" || item.artifact.status === "locked") &&
+      item.artifact.currentVersion > 0;
+    if (alreadySealed) continue;
+    let status = item.artifact.status;
+    if (status === "empty") {
+      await saveDraft(item.artifact.id, await scaffoldFor(page.slug), actor);
+      status = "draft";
+    }
+    if (status === "draft") {
+      await submitForReview(item.artifact.id, actor);
+      status = "in_review";
+    }
+    if (status !== "in_review") {
+      throw new Error(
+        `Paso 5: estado inesperado «${status}» en la composición de «${page.pagePath}».`,
+      );
+    }
+    await approve(
+      item.artifact.id,
+      actor,
+      "Composición aprobada para el primer release (checklist §7.8 del paso 5).",
+    );
+    approvedCount += 1;
+    console.log(`page.composition[${page.pagePath}]: aprobada.`);
+  }
+  if (approvedCount === 0) {
+    console.log("page.composition: todas las páginas del sitemap ya estaban aprobadas.");
+  }
+  items = await getProjectArtifacts(projectId);
+
+  // --- (b) generated repo up to date (the provider builds from the git TAG) --
+  // NOTE (template-statics): regeneration only rewrites codegen-owned files;
+  // files copied verbatim from the template (e.g. `src/puck/*`) are human
+  // territory after the initial copy and are NEVER re-copied (§18.2). Template
+  // upgrades for already-generated repos have no product story yet — the demo
+  // repo received the section-anchor change via an explicit git commit.
+  const repoDir = getProjectRepoDir(projectId);
+  if (!hasManifest(repoDir)) {
+    const result = await generateProject(projectId, actor);
+    failOnConflicts(result.summary.conflicts);
+    console.log(
+      `Proyecto generado en ${result.repoDir} (${result.summary.created.length} archivos, commit ${result.summary.commit?.slice(0, 10) ?? "—"}).`,
+    );
+  } else {
+    const [last] = await getGenerations(projectId, 1);
+    const lastSummary = last?.generation.summary as GenerationSummary | undefined;
+    const upToDate =
+      last?.generation.status === "success" &&
+      lastSummary != null &&
+      generationIsCurrent(lastSummary, items);
+    if (upToDate) {
+      console.log("Generación al día: la última generación ya consume las versiones selladas actuales.");
+    } else {
+      const result = await regenerateProject(projectId, actor);
+      failOnConflicts(result.summary.conflicts);
+      console.log(
+        `Proyecto regenerado: ${result.summary.written.length} reescritos, ${result.summary.created.length} creados` +
+          (result.summary.commit ? ` (commit ${result.summary.commit.slice(0, 10)}).` : " (sin cambios)."),
+      );
+    }
+  }
+  if (!readPuckAnchorsPresent(repoDir)) {
+    console.warn(
+      "AVISO: el repo demo no incluye las anclas de sección del template (src/puck/primitives.tsx sin withBlockAnchors).\n" +
+        "  La regeneración NO re-copia archivos estáticos del template (son territorio humano tras la copia inicial, §18.2)\n" +
+        "  y no existe aún una historia de «upgrade de template». Opciones honestas: re-crear el repo demo\n" +
+        "  (npx tsx scripts/e2e-studio.ts) o portar el cambio con un commit humano en el repo generado.",
+    );
+  }
+
+  // --- (c) release checklist §7.8 must be green ------------------------------
+  const checklist = await runReleaseChecklist(projectId);
+  for (const item of checklist) {
+    console.log(`  ${item.ok ? "✓" : "✗"} ${item.label}${item.detail ? ` — ${item.detail}` : ""}`);
+  }
+  const failing = checklist.filter((item) => !item.ok);
+  if (failing.length > 0) {
+    throw new Error(
+      `El checklist de release no quedó en verde: ${failing.map((item) => item.key).join(", ")}.`,
+    );
+  }
+
+  // --- (d) release v1: sealed for real via createRelease ---------------------
+  const releaseItem = singleton("release");
+  if (!releaseItem) {
+    throw new Error("Paso 5: el proyecto no tiene artefacto release.");
+  }
+  let releaseVersion = releaseItem.artifact.currentVersion;
+  if (releaseVersion === 0) {
+    const created = await createRelease(
+      projectId,
+      "Release v1 de la demo: todas las composiciones del sitemap aprobadas y checklist §7.8 en verde.",
+      actor,
+    );
+    releaseVersion = created.version.version;
+    console.log(
+      `release: v${releaseVersion} sellado (tag ${created.gitTag} → ${created.taggedCommit.slice(0, 10)}).`,
+    );
+    // Stale-build cleanup: scripts/smoke-deploy.ts may have sealed a LOCAL
+    // build of `release-1` over a manual pre-release tag. `createRelease`
+    // re-tags (`git tag --force`), so that old build's commit no longer
+    // matches and would trip the provider's immutability guard on deploy.
+    // It never belonged to a platform release — remove it so the provider
+    // builds the real one.
+    const markerPath = getBuildMarkerPath(projectId, created.payload.releaseNumber);
+    if (existsSync(markerPath)) {
+      const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { commit?: string };
+      if (marker.commit !== created.taggedCommit) {
+        rmSync(getReleaseBuildDir(projectId, created.payload.releaseNumber), {
+          recursive: true,
+          force: true,
+        });
+        console.log(
+          "  (build local previo de release-1 — sellado sobre un tag manual anterior al release real — eliminado)",
+        );
+      }
+    }
+  } else {
+    console.log(`release: ya existe v${releaseVersion}; no se sella otro.`);
+  }
+
+  // --- (e) open review round («Cliente Acme — ronda 1») ----------------------
+  const summaries = await listReviewRequests(projectId);
+  let summary = summaries.find((s) => s.request.label === DEMO_REVIEW_LABEL);
+  if (!summary) {
+    const request = await createReviewRequest(projectId, releaseVersion, DEMO_REVIEW_LABEL, actor);
+    summary = { request, commentCount: 0, openCommentCount: 0, approvalCount: 0 };
+    console.log(`review: ronda «${DEMO_REVIEW_LABEL}» abierta sobre release v${releaseVersion}.`);
+  } else {
+    console.log(
+      `review: la ronda «${DEMO_REVIEW_LABEL}» ya existe (${summary.commentCount} comentarios); no se recrea.`,
+    );
+  }
+  const request = summary.request;
+
+  // --- (f) the 2 demo client comments (one open + task, one resolved) --------
+  if (request.status === "open" && summary.commentCount === 0) {
+    const releasePayload = releasePayloadSchema.parse(
+      await loadSealedPayload(db, releaseItem.artifact.id, request.releaseVersion),
+    );
+    const pageKeys = Object.keys(releasePayload.versions.compositions).sort();
+    const pickPage = (preferred: string, fallbackIndex: number): string =>
+      pageKeys.includes(preferred)
+        ? preferred
+        : pageKeys[Math.min(fallbackIndex, pageKeys.length - 1)];
+    const sectionIdFor = async (pageKey: string): Promise<string | null> => {
+      const item = items.find(
+        (i) => i.artifact.type === "page.composition" && i.artifact.key === pageKey,
+      );
+      const version = releasePayload.versions.compositions[pageKey];
+      if (!item || !version) return null;
+      const parsed = pageCompositionPayloadSchema.safeParse(
+        await loadSealedPayload(db, item.artifact.id, version),
+      );
+      if (!parsed.success) return null;
+      const block =
+        parsed.data.content.find((b) => b.type !== "Navbar" && b.type !== "Footer") ??
+        parsed.data.content[0];
+      const id = block?.props?.id;
+      return typeof id === "string" ? id : null;
+    };
+
+    const openPage = pickPage("inicio", 0);
+    const openComment = await addClientComment(request.token, {
+      pageKey: openPage,
+      sectionId: await sectionIdFor(openPage),
+      authorName: DEMO_CLIENT_NAME,
+      body:
+        "El titular transmite fiabilidad, pero el plazo de respuesta del SAT (24 h) debería verse en la primera pantalla: es nuestro principal argumento de venta.",
+    });
+    console.log(
+      `review: comentario de cliente ABIERTO en «${openPage}» (${openComment.id}) — su tarea derivada §12.2 queda visible en el Cockpit.`,
+    );
+
+    const resolvedPage = pickPage("servicios", Math.min(1, pageKeys.length - 1));
+    const resolvedComment = await addClientComment(request.token, {
+      pageKey: resolvedPage,
+      sectionId: await sectionIdFor(resolvedPage),
+      authorName: DEMO_CLIENT_NAME,
+      body:
+        "El caso destacado menciona a Atlántica Foods: confirmad con su responsable que podemos citarlos antes de publicar.",
+    });
+    await resolveComment(resolvedComment.id, actor);
+    console.log(
+      `review: comentario de cliente en «${resolvedPage}» (${resolvedComment.id}) creado y RESUELTO (su tarea derivada queda cerrada).`,
+    );
+    console.log("review: sin aprobación de cliente todavía — ese momento es del usuario.");
+  }
+
+  return request.token;
+}
+
+/** True when the generated repo's template statics carry the section anchors. */
+function readPuckAnchorsPresent(repoDir: string): boolean {
+  const primitives = path.join(repoDir, "src", "puck", "primitives.tsx");
+  if (!existsSync(primitives)) return false;
+  return readFileSync(primitives, "utf8").includes("withBlockAnchors");
+}
+
+// ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
 
@@ -751,6 +1163,17 @@ function printCredentials(): void {
   console.log(`  Email:      ${DEMO_EMAIL}`);
   console.log(`  Contraseña: ${DEMO_PASSWORD}`);
   console.log(`  Workspace:  ${DEMO_WORKSPACE_NAME} (/w/${DEMO_WORKSPACE_SLUG})`);
+  console.log("────────────────────────────────────────────");
+}
+
+/** The shareable client link of the demo review round (R8: token = credential). */
+function printReviewLink(token: string): void {
+  console.log("\n────────────────────────────────────────────");
+  console.log(`Ronda de review del cliente («${DEMO_REVIEW_LABEL}»)`);
+  console.log(`  Link:  http://localhost:3000/review/${token}`);
+  console.log("  (la página del cliente embebe el deployment del slot preview;");
+  console.log("   despliega el release desde la pantalla Deploy o con");
+  console.log("   npx tsx scripts/e2e-deploy-review.ts para verla servida)");
   console.log("────────────────────────────────────────────");
 }
 
@@ -812,9 +1235,17 @@ async function main(): Promise<void> {
     .limit(1);
   if (existingProject[0]) {
     console.log(
-      `Proyecto "${DEMO_PROJECT_NAME}" ya existe (${existingProject[0].id}); seed omitido.`,
+      `Proyecto "${DEMO_PROJECT_NAME}" ya existe (${existingProject[0].id}); historia base omitida.`,
+    );
+    // The step-5 state is still ensured (idempotent: no-ops when present).
+    const token = await ensureReleaseAndReviewRound(
+      db,
+      workspaceId,
+      existingProject[0].id,
+      userId,
     );
     printCredentials();
+    printReviewLink(token);
     return;
   }
 
@@ -984,6 +1415,9 @@ async function main(): Promise<void> {
   });
   console.log("Tarea manual abierta creada.");
 
+  // --- Paso 5: composiciones restantes + release v1 + ronda de review -------
+  const token = await ensureReleaseAndReviewRound(db, workspaceId, project.id, userId);
+
   console.log("\nSeed completado:");
   console.log("  - spec.intake       approved v2 (2 versiones inmutables)");
   console.log("  - spec.strategy     approved v2 (marcada outdated por intake v2 y re-validada)");
@@ -992,14 +1426,17 @@ async function main(): Promise<void> {
   console.log("  - cms.collections   approved v1 (3 colecciones)");
   console.log("  - content.page      approved v1 (3 páginas con copy/SEO)");
   console.log(
-    `  - page.composition  ${sync.created.length} artefactos (uno por página): «inicio» y «servicios» approved v1, «nosotros» en draft, resto empty`,
+    `  - page.composition  ${sync.created.length} artefactos (uno por página), TODAS las páginas del sitemap aprobadas (el borrador de «nosotros» quedó sellado como v1)`,
   );
-  console.log("  - release           empty (fase futura)");
+  console.log("  - release           v1 SELLADO (versión inmutable + tag git release-1)");
+  console.log(
+    `  - review            ronda abierta «${DEMO_REVIEW_LABEL}»: 1 comentario abierto (con tarea derivada en el Cockpit) + 1 resuelto; SIN aprobación de cliente`,
+  );
   console.log("  - 1 tarea manual abierta");
-  console.log("\nEl proyecto demo es GENERABLE: los 3 artefactos requeridos por el");
-  console.log("Generator están aprobados. Siguiente paso:");
-  console.log("  npx tsx scripts/e2e-generator.ts   (o el botón «Generar» en la UI)");
+  console.log("\nSiguiente paso (deploy real, lo hace el usuario o el e2e):");
+  console.log("  npx tsx scripts/e2e-deploy-review.ts   (o la pantalla Deploy del proyecto)");
   printCredentials();
+  printReviewLink(token);
 }
 
 main()

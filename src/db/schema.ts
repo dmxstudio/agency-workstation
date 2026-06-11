@@ -10,6 +10,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -71,6 +72,40 @@ export const generationStatusEnum = pgEnum("generation_status", [
   "success",
   "conflicts",
   "error",
+]);
+
+/** §7.7 — lifecycle of a client review round. */
+export const reviewRequestStatusEnum = pgEnum("review_request_status", [
+  "open",
+  "closed",
+]);
+
+/**
+ * §7.7 / §8.5 — who authored a review comment. `client` identities are the
+ * link label + the name they type (token link, no account — R8); `team`
+ * comments come from authenticated workspace users.
+ */
+export const reviewCommentAuthorKindEnum = pgEnum("review_comment_author_kind", [
+  "client",
+  "team",
+]);
+
+export const reviewCommentStatusEnum = pgEnum("review_comment_status", [
+  "open",
+  "resolved",
+]);
+
+/** §7.8 — local deploy slots (production http://localhost:4100, preview :4200). */
+export const deploymentSlotEnum = pgEnum("deployment_slot", [
+  "production",
+  "preview",
+]);
+
+export const deploymentStatusEnum = pgEnum("deployment_status", [
+  "building",
+  "running",
+  "stopped",
+  "failed",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -451,6 +486,146 @@ export const generations = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Client review (§7.7, §8.5): review rounds over a sealed RELEASE version.
+// Client approvals are a DISTINCT type from internal approvals — they approve
+// page/release versions through a token link and NEVER transition internal
+// artifacts.
+// ---------------------------------------------------------------------------
+
+export const reviewRequests = pgTable(
+  "review_requests",
+  {
+    id: text("id").primaryKey(), // rev_
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Sealed version of the project's `release` artifact this round reviews. */
+    releaseVersion: integer("release_version").notNull(),
+    /**
+     * URL-safe random token — the WHOLE client credential (link auth, no
+     * account, R8). Public access always validates this value against the DB.
+     */
+    token: text("token").notNull(),
+    /** Human label of the link/round, e.g. "Cliente Acme — ronda 1". */
+    label: text("label").notNull(),
+    status: reviewRequestStatusEnum("status").notNull().default("open"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("review_requests_token_unique").on(table.token),
+    index("review_requests_project_id_idx").on(table.projectId),
+  ],
+);
+
+export const reviewComments = pgTable(
+  "review_comments",
+  {
+    id: text("id").primaryKey(), // cmt_
+    requestId: text("request_id")
+      .notNull()
+      .references(() => reviewRequests.id, { onDelete: "cascade" }),
+    /** Page key of the release (`page.composition` instance key, e.g. "home"). */
+    pageKey: text("page_key").notNull(),
+    /** Optional anchor: stable block/section id inside the page composition. */
+    sectionId: text("section_id"),
+    /** Threading: parent comment of a reply (same request). */
+    parentId: text("parent_id").references((): AnyPgColumn => reviewComments.id, {
+      onDelete: "cascade",
+    }),
+    authorKind: reviewCommentAuthorKindEnum("author_kind").notNull(),
+    /** Display name: typed by the client, or the team user's name. */
+    authorName: text("author_name").notNull(),
+    /** Session user behind a `team` comment; always NULL for `client`. */
+    authorUserId: text("author_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    body: text("body").notNull(),
+    status: reviewCommentStatusEnum("status").notNull().default("open"),
+    /** Team member who resolved it (resolution is team-only). */
+    resolvedBy: text("resolved_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("review_comments_request_id_idx").on(table.requestId),
+    index("review_comments_parent_id_idx").on(table.parentId),
+  ],
+);
+
+export const clientApprovals = pgTable(
+  "client_approvals",
+  {
+    id: text("id").primaryKey(), // capr_
+    requestId: text("request_id")
+      .notNull()
+      .references(() => reviewRequests.id, { onDelete: "cascade" }),
+    /** Denormalised from the request: the approval targets THIS release version. */
+    releaseVersion: integer("release_version").notNull(),
+    /** Page approved; NULL = global approval of the whole round/release. */
+    pageKey: text("page_key"),
+    /** Name the client typed — their identity is link label + typed name (R8). */
+    approvedName: text("approved_name").notNull(),
+    comment: text("comment"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("client_approvals_request_id_idx").on(table.requestId)],
+);
+
+// ---------------------------------------------------------------------------
+// Deployments (§7.8): immutable release builds served on local slots behind
+// the DeployProvider interface (Vercel will land behind the SAME interface).
+// ---------------------------------------------------------------------------
+
+export const deployments = pgTable(
+  "deployments",
+  {
+    id: text("id").primaryKey(), // dep_
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Sealed version of the `release` artifact this deployment serves. */
+    releaseVersion: integer("release_version").notNull(),
+    slot: deploymentSlotEnum("slot").notNull(),
+    status: deploymentStatusEnum("status").notNull().default("building"),
+    /** Public URL of the slot, e.g. http://localhost:4100. */
+    url: text("url").notNull(),
+    /**
+     * Provider detail (local provider: `{ pid, port, buildDir, error }`).
+     * Shape is owned/validated by the deploy module.
+     */
+    detail: jsonb("detail"),
+    /** Always a human with role — no deploy without confirmed checklist (§13). */
+    actorId: text("actor_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("deployments_project_id_slot_idx").on(table.projectId, table.slot),
+    index("deployments_project_id_created_at_idx").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Relations (for the drizzle relational query API)
 // ---------------------------------------------------------------------------
 
@@ -491,6 +666,59 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   tasks: many(tasks),
   agentRuns: many(agentRuns),
   generations: many(generations),
+  reviewRequests: many(reviewRequests),
+  deployments: many(deployments),
+}));
+
+export const reviewRequestsRelations = relations(reviewRequests, ({ one, many }) => ({
+  project: one(projects, {
+    fields: [reviewRequests.projectId],
+    references: [projects.id],
+  }),
+  creator: one(users, {
+    fields: [reviewRequests.createdBy],
+    references: [users.id],
+  }),
+  comments: many(reviewComments),
+  clientApprovals: many(clientApprovals),
+}));
+
+export const reviewCommentsRelations = relations(reviewComments, ({ one, many }) => ({
+  request: one(reviewRequests, {
+    fields: [reviewComments.requestId],
+    references: [reviewRequests.id],
+  }),
+  parent: one(reviewComments, {
+    fields: [reviewComments.parentId],
+    references: [reviewComments.id],
+    relationName: "commentThread",
+  }),
+  replies: many(reviewComments, { relationName: "commentThread" }),
+  author: one(users, {
+    fields: [reviewComments.authorUserId],
+    references: [users.id],
+    relationName: "reviewCommentAuthor",
+  }),
+  resolver: one(users, {
+    fields: [reviewComments.resolvedBy],
+    references: [users.id],
+    relationName: "reviewCommentResolver",
+  }),
+}));
+
+export const clientApprovalsRelations = relations(clientApprovals, ({ one }) => ({
+  request: one(reviewRequests, {
+    fields: [clientApprovals.requestId],
+    references: [reviewRequests.id],
+  }),
+}));
+
+export const deploymentsRelations = relations(deployments, ({ one }) => ({
+  project: one(projects, {
+    fields: [deployments.projectId],
+    references: [projects.id],
+  }),
+  actor: one(users, { fields: [deployments.actorId], references: [users.id] }),
 }));
 
 export const generationsRelations = relations(generations, ({ one }) => ({
@@ -610,6 +838,14 @@ export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type Generation = typeof generations.$inferSelect;
 export type NewGeneration = typeof generations.$inferInsert;
+export type ReviewRequest = typeof reviewRequests.$inferSelect;
+export type NewReviewRequest = typeof reviewRequests.$inferInsert;
+export type ReviewComment = typeof reviewComments.$inferSelect;
+export type NewReviewComment = typeof reviewComments.$inferInsert;
+export type ClientApproval = typeof clientApprovals.$inferSelect;
+export type NewClientApproval = typeof clientApprovals.$inferInsert;
+export type Deployment = typeof deployments.$inferSelect;
+export type NewDeployment = typeof deployments.$inferInsert;
 
 export type WorkspaceRole = (typeof workspaceRoleEnum.enumValues)[number];
 export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number];
@@ -619,3 +855,9 @@ export type TaskKind = (typeof taskKindEnum.enumValues)[number];
 export type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
 export type GenerationKind = (typeof generationKindEnum.enumValues)[number];
 export type GenerationStatus = (typeof generationStatusEnum.enumValues)[number];
+export type ReviewRequestStatus = (typeof reviewRequestStatusEnum.enumValues)[number];
+export type ReviewCommentAuthorKind =
+  (typeof reviewCommentAuthorKindEnum.enumValues)[number];
+export type ReviewCommentStatus = (typeof reviewCommentStatusEnum.enumValues)[number];
+export type DeploymentSlot = (typeof deploymentSlotEnum.enumValues)[number];
+export type DeploymentStatus = (typeof deploymentStatusEnum.enumValues)[number];

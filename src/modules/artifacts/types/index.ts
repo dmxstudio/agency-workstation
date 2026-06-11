@@ -87,7 +87,9 @@ export {
 export {
   releasePayloadSchema,
   releaseDefinition,
-  releaseTargetSchema,
+  releaseChecklistItemSchema,
+  releaseVersionsSchema,
   type ReleasePayload,
-  type ReleaseTarget,
+  type ReleaseChecklistItem,
+  type ReleaseVersions,
 } from "./release";

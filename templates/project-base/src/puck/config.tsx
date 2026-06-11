@@ -1,4 +1,5 @@
 import type { Config, Viewport } from "@puckeditor/core";
+import { withBlockAnchors } from "./primitives";
 import { Hero, HeroSplit, HeroMinimal } from "./sections/heroes";
 import { Section, Columns, Spacer, Divider } from "./sections/structure";
 import {
@@ -37,9 +38,11 @@ import { Navbar, Footer } from "./sections/navigation";
 /**
  * Section registry — 34 governed components. Every visual decision is an
  * enumerated variant; there is no free-form CSS/HTML field anywhere.
+ * `withBlockAnchors` makes every block render its Puck id as the DOM id of
+ * its root element (review comment anchors, `#<sectionId>`).
  */
 export const puckConfig: Config = {
-  components: {
+  components: withBlockAnchors({
     // structure
     Section,
     Columns,
@@ -80,7 +83,7 @@ export const puckConfig: Config = {
     // navigation
     Navbar,
     Footer,
-  },
+  }),
   categories: {
     estructura: {
       title: "Estructura",

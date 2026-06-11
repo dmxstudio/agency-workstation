@@ -25,9 +25,13 @@ Credenciales demo (las imprime también el seed):
 | Contraseña | `demo1234`                     |
 | Workspace  | Demo Agency (`/w/demo`)        |
 
-El seed crea el proyecto **"Sitio Corporativo Acme"** con el grafo de 8 artefactos instanciado y una historia realista producida por los servicios de dominio reales: `spec.intake` aprobado en **v2** (re-scope que añade la página de carreras), `spec.strategy` marcado `outdated` por esa propagación (§8.4) y **re-validado como v2**, `spec.sitemap` aprobado (6 páginas, con un borrador previo al re-scope en su historial), `design.tokens`, `cms.collections` (3 colecciones) y `content.page` (copy/SEO de 3 páginas) aprobados, `release` vacío, una tarea manual abierta y el feed de actividad/audit completo. Las composiciones (`page.composition`, **un artefacto por página** del sitemap aprobado) quedan con historia por página: «inicio» aprobada v1 (el scaffold del Generator sellado como composición de portada), «servicios» aprobada v1 (Data de Puck con bindings CMS), «nosotros» con un borrador sin aprobar y el resto `empty`.
+El seed crea el proyecto **"Sitio Corporativo Acme"** con el grafo de 8 artefactos instanciado y una historia realista producida por los servicios de dominio reales: `spec.intake` aprobado en **v2** (re-scope que añade la página de carreras), `spec.strategy` marcado `outdated` por esa propagación (§8.4) y **re-validado como v2**, `spec.sitemap` aprobado (6 páginas, con un borrador previo al re-scope en su historial), `design.tokens`, `cms.collections` (3 colecciones) y `content.page` (copy/SEO de 3 páginas) aprobados, una tarea manual abierta y el feed de actividad/audit completo. Las composiciones (`page.composition`, **un artefacto por página** del sitemap aprobado) quedan TODAS aprobadas (las páginas sin composición autorada reciben el scaffold del Generator sellado vía el ciclo §13).
+
+Además el seed deja el **paso 5 listo para vivirlo**: genera/regenera el repo del proyecto, valida el checklist de release §7.8 en verde, **sella el release v1** (versión inmutable del artefacto `release` + tag git `release-1`) y abre una **ronda de review de cliente** («Cliente Acme — ronda 1») con dos comentarios demo — uno abierto (su tarea derivada §12.2 aparece en el Cockpit) y uno resuelto — y **sin aprobación de cliente** (ese momento queda para ti en `/review/<token>`; el seed imprime el link al final). El seed **nunca despliega** (los builds tardan minutos): hazlo desde la pantalla Deploy o con `npx tsx scripts/e2e-deploy-review.ts`.
 
 Los **tres artefactos que requiere el Generator** (`spec.sitemap`, `cms.collections`, `design.tokens`) quedan aprobados: el proyecto demo es generable nada más sembrar (ver la sección Generator).
+
+> PGlite es de **un solo proceso**: para ejecutar el seed o cualquier script `tsx` que toque la DB, para antes el dev server (`npm run dev`) y relánzalo después.
 
 Para regenerar la demo desde cero: borra `./.data` y repite `db:migrate` + `db:seed`.
 
@@ -42,10 +46,10 @@ Hecho:
 - **Design system** (`src/ui`) — tokens §11.4: monocromo + acentos semánticos, violeta reservado a actividad de agentes, mono para IDs/versiones/diffs.
 - **Generator** (`src/modules/generator` + pantalla `/w/<slug>/p/<id>/generator`) — generación y regeneración parcial de proyectos reales desde los artefactos aprobados (ver sección Generator).
 - **Visual Studio + CMS** (`src/modules/studio` + pantallas `/studio`, `/studio/<página>` y `/cms`) — editor Puck embebido con el ciclo de aprobación §13 y vistas del modelo de contenido (ver sección Studio y CMS).
+- **Review + Deploy & Release** (`src/modules/review`, `src/modules/deploy` + pantallas `/review`, `/deploy` y la superficie pública `/review/<token>`) — checklist de release §7.8, releases inmutables, deploy local por slots con rollback y review de cliente por link con token (ver sección Review y Deploy).
 
 Pendiente (fases posteriores de la spec):
 
-- **Review, Deploy** — placeholders "Próximamente" en la navegación.
 - **Agent Runtime** (`agent_runs` es solo un placeholder en el schema; no hay flujo propose→diff→approve de agentes).
 - **Cierre de gates de fase** (el stepper marca "cerrable" pero no existe la acción de cierre con lock masivo + avance de `currentPhase`).
 - **Clerk** como proveedor de auth (llegará detrás del mismo adapter, §18.6).
@@ -86,6 +90,36 @@ El **Visual Studio** compone las páginas del sitemap aprobado con el registry g
 
 **Demo end-to-end del paso 4:** con la demo sembrada, `npx tsx scripts/e2e-studio.ts` añade una sección a la composición de «Servicios» tal y como la crearía el canvas (defaultProps del registry), muestra el diff, la aprueba (v2), regenera el proyecto, hace `seed + build + next start` DENTRO del proyecto generado y verifica con curl que `/servicios` sirve la sección nueva y `/` la composición aprobada de «inicio». Nota: cada ejecución de los e2e deja flags `outdated` legítimos (propagación §8.4 de las versiones que aprueban); para una demo impoluta, revalida desde el Cockpit o re-siembra desde cero.
 
+## Review de cliente y Deploy & Release (§7.7, §7.8, §8.5)
+
+El paso 5 cierra el ciclo: **release inmutable → deploy real → review del cliente sobre el deployment → rollback**. Una sola pipeline de render (§16): el cliente revisa el MISMO build que se despliega, embebido por iframe — nunca un render paralelo.
+
+**Releases (pantalla `/w/<slug>/p/<id>/deploy`):**
+
+1. El **checklist de release §7.8** se evalúa en vivo (5 validaciones automáticas: inputs del generator aprobados, todas las composiciones del sitemap aprobadas, cero bindings CMS rotos, generación al día, sin re-validaciones `outdated` pendientes).
+2. **Crear release** exige el checklist todo en verde + confirmación explícita de un humano con rol `admin|member` (§13: ningún deploy sin checklist confirmado). Un release es una **versión inmutable del artefacto `release`** sellada vía el ciclo normal de artifacts (origin humano, audit log) que congela las versiones selladas de cada input + el checklist evaluado, y tagea el repo generado (`release-N`).
+3. **Desplegar**: cada release sellado puede activarse en cualquiera de los dos slots. El **rollback** es desplegar el release anterior — sin estado extra.
+
+**Deploy local (interfaz `DeployProvider`):** el MVP resuelve §7.8 en local detrás de la interfaz provider-agnóstica `src/modules/deploy/provider.ts` (mismo patrón que el adapter de auth §18.6 — Vercel llegará detrás de la MISMA interfaz). El provider local construye un **build inmutable por release** (`git archive` del tag → `.data/deploys/<projectId>/builds/release-<N>/`, sellado con marker; jamás se reconstruye) y sirve los slots con `next start` detached + pidfile:
+
+| Slot         | URL                     | Env override          |
+| ------------ | ----------------------- | --------------------- |
+| `production` | `http://localhost:4100` | `DEPLOY_PROD_PORT`    |
+| `preview`    | `http://localhost:4200` | `DEPLOY_PREVIEW_PORT` |
+
+El estado de los slots se comprueba contra la REALIDAD (pid vivo + identidad del proceso + probe HTTP), no contra lo persistido; un puerto ocupado por un proceso ajeno es un error claro (`PORT_IN_USE`) y la plataforma **nunca** mata procesos que no arrancó. Cada deploy/stop registra filas en `deployments` + audit log.
+
+**Review del cliente (§7.7, §8.5):**
+
+- En `/w/<slug>/p/<id>/review` el equipo abre **rondas de review** sobre un release sellado; cada ronda emite un **link con token** (`/review/<token>`) que es la credencial completa del cliente (sin cuenta, R8: su identidad es la etiqueta del link + el nombre que escribe).
+- La página pública embebe el **deployment real** del slot preview por iframe, con las secciones de la composición sellada como anclas (`<section id="<blockId>">` — clic en la sidebar hace scroll en el sitio servido), hilos de comentarios anclados a página/sección y estados abierto/resuelto.
+- **Comentario de cliente abierto → tarea derivada** (§12.2) visible en el Cockpit; resolver el comentario la cierra (las tareas derivadas nunca mienten).
+- La **aprobación del cliente es un tipo distinto** (§8.5): filas en `client_approvals` ancladas a la ronda + versión de release. **Jamás** transiciona artefactos internos.
+
+**Demo end-to-end del paso 5:** con la demo sembrada (el seed deja el release v1 sellado y la ronda abierta, sin desplegar), `npx tsx scripts/e2e-deploy-review.ts` recorre todo con los servicios reales: checklist en verde → sella el siguiente release → build inmutable + deploy al slot preview → verifica que TODAS las páginas del release se sirven con sus anclas de sección → ronda nueva → comentario de cliente por token → tarea derivada → resolver → aprobación de cliente → cerrar ronda → **rollback** al release anterior → stop del slot y puertos libres. Mata todos los procesos que arranca (re-runnable; cada ejecución sella un release más).
+
+> Nota honesta sobre el template: la regeneración solo reescribe archivos owned-by-codegen; los archivos **estáticos copiados del template** (p.ej. `src/puck/*`) son territorio humano tras la copia inicial y NO se re-copian (§18.2). Un cambio de template llega a los repos ya generados re-creándolos (`scripts/e2e-studio.ts` lo hace con el repo demo) o portándolo con un commit humano dentro del repo generado; no existe aún una historia de producto de «upgrade de template».
+
 ## Postgres real
 
 Por defecto no hay nada que configurar (PGlite embebido). Para usar un Postgres de verdad, define `DATABASE_URL` (por ejemplo en `.env.local`, ver `.env.example`):
@@ -107,6 +141,9 @@ Con la variable definida, `npm run db:migrate`, `npm run db:seed` y la app usan 
 | `npm run lint`                        | ESLint                                                           |
 | `npx tsx scripts/e2e-generator.ts`    | Genera el proyecto demo + drill de conflictos §18.2 (re-runnable) |
 | `npx tsx scripts/e2e-studio.ts`       | Drill del paso 4: composición→diff→aprobación→regeneración→el sitio generado sirve el cambio (re-runnable) |
+| `npx tsx scripts/e2e-deploy-review.ts` | Drill del paso 5: release→deploy(preview)→review por token→rollback→stop (re-runnable; mata todo lo que arranca) |
+| `npx tsx scripts/smoke-review.ts`     | Smoke del módulo review/release (aislado, se limpia solo)        |
+| `npx tsx scripts/smoke-deploy.ts`     | Smoke del DeployProvider local (usa el repo demo; slots 4100/4200 quedan libres) |
 | `npx tsx scripts/smoke-artifacts.ts`  | Smoke del dominio de artefactos                                  |
 | `npx tsx scripts/smoke-generator.ts`  | Smoke del módulo generator (aislado, se limpia solo)             |
 | `npx tsx src/modules/studio/registry/smoke-render.mts` | Smoke de render del registry del Studio (RSC)   |

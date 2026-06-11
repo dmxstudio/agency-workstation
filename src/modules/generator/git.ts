@@ -65,3 +65,20 @@ export async function gitLog(repoDir: string, limit = 20): Promise<string[]> {
   const out = await runGit(repoDir, ["log", `--max-count=${limit}`, "--pretty=format:%H %s"]);
   return out === "" ? [] : out.split("\n");
 }
+
+/**
+ * Tags HEAD with `tag` (§7.8: releases carry a `release-N` tag in the
+ * generated repo). `--force` keeps a retried release creation idempotent if a
+ * previous attempt died between tagging and recording. Returns the tagged
+ * commit hash.
+ */
+export async function gitTag(repoDir: string, tag: string): Promise<string> {
+  await runGit(repoDir, ["tag", "--force", tag, "HEAD"]);
+  return runGit(repoDir, ["rev-parse", "HEAD"]);
+}
+
+/** Lists tags in the repo (sorted by name). */
+export async function gitListTags(repoDir: string): Promise<string[]> {
+  const out = await runGit(repoDir, ["tag", "--list", "--sort=refname"]);
+  return out === "" ? [] : out.split("\n");
+}

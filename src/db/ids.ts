@@ -21,6 +21,10 @@ export const ID_PREFIXES = {
   task: "tsk",
   auditEvent: "evt",
   generation: "gen",
+  reviewRequest: "rev",
+  reviewComment: "cmt",
+  clientApproval: "capr",
+  deployment: "dep",
 } as const;
 
 export type IdEntity = keyof typeof ID_PREFIXES;
@@ -57,4 +61,8 @@ export const newId = {
   task: () => generateId(ID_PREFIXES.task),
   auditEvent: () => generateId(ID_PREFIXES.auditEvent),
   generation: () => generateId(ID_PREFIXES.generation),
+  reviewRequest: () => generateId(ID_PREFIXES.reviewRequest),
+  reviewComment: () => generateId(ID_PREFIXES.reviewComment),
+  clientApproval: () => generateId(ID_PREFIXES.clientApproval),
+  deployment: () => generateId(ID_PREFIXES.deployment),
 } satisfies Record<IdEntity, () => string>;

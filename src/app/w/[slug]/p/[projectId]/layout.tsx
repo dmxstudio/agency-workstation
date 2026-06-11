@@ -20,15 +20,15 @@ import { signOutAction } from "@/modules/platform-core/actions";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
 import { getProjectById } from "@/modules/platform-core/projects";
 import { getWorkspaceBySlug } from "@/modules/platform-core/workspaces";
-import { Badge, Button, cn } from "@/ui";
+import { Button, cn } from "@/ui";
 
 import { NavLink } from "@/app/_components/nav-link";
 import { ThemeToggle } from "@/app/_components/theme-toggle";
 
 /**
  * Layout de proyecto con navegación lateral (§11.4): workspace arriba,
- * Cockpit + artefactos de Spec OS en medio, módulos futuros (§14) como
- * placeholders deshabilitados, y usuario + sesión + tema abajo.
+ * Cockpit + artefactos de Spec OS en medio, módulos activos (§14) y
+ * usuario + sesión + tema abajo.
  */
 
 /** Tipos cuya edición vive en Spec OS (las 6 secciones de la spec, §7.2). */
@@ -86,16 +86,12 @@ const navItemClass =
   "flex items-center gap-2 rounded px-2 py-1.5 text-[13px] text-muted transition-colors hover:bg-surface-raised hover:text-foreground";
 const navItemActiveClass = "bg-surface-raised font-medium text-foreground";
 
-/** Módulos activos (§14): Studio (§7.4) y CMS (§7.6). */
+/** Módulos activos (§14): Studio (§7.4), CMS (§7.6), Review (§7.7) y Deploy (§7.8). */
 const activeModules = [
   { label: "Studio", segment: "studio", icon: Palette },
   { label: "CMS", segment: "cms", icon: Database },
-] as const;
-
-/** Módulos post-fase definidos en §14 que aún no se construyen. */
-const upcomingModules = [
-  { label: "Review", icon: MessageSquareText },
-  { label: "Deploy", icon: Rocket },
+  { label: "Review", segment: "review", icon: MessageSquareText },
+  { label: "Deploy", segment: "deploy", icon: Rocket },
 ] as const;
 
 export default async function ProjectLayout({
@@ -217,18 +213,6 @@ export default async function ProjectLayout({
                   <Icon size={14} strokeWidth={1.75} aria-hidden />
                   {label}
                 </NavLink>
-              </li>
-            ))}
-            {upcomingModules.map(({ label, icon: Icon }) => (
-              <li key={label}>
-                <span
-                  aria-disabled="true"
-                  className="flex cursor-not-allowed items-center gap-2 rounded px-2 py-1.5 text-[13px] text-faint"
-                >
-                  <Icon size={14} strokeWidth={1.75} aria-hidden />
-                  {label}
-                  <Badge className="ml-auto">Próximamente</Badge>
-                </span>
               </li>
             ))}
           </ul>

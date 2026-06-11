@@ -1,5 +1,6 @@
 import type { Config, Viewport } from "@puckeditor/core";
 import type { CmsCollectionsPayload } from "@/modules/artifacts";
+import { withBlockAnchors } from "./primitives";
 import { Hero, HeroSplit, HeroMinimal } from "./sections/heroes";
 import { Section, Columns, Spacer, Divider } from "./sections/structure";
 import {
@@ -56,7 +57,9 @@ export function createPuckConfig(options: CreatePuckConfigOptions = {}): Config 
   const { Navbar, Footer } = createNavigationSections(options.nav);
 
   return {
-    components: {
+    // Igual que el template: cada bloque renderiza su id Puck como id DOM de
+    // la raíz de la sección (anclas de comentarios del review, `#<sectionId>`).
+    components: withBlockAnchors({
       // estructura
       Section,
       Columns,
@@ -97,7 +100,7 @@ export function createPuckConfig(options: CreatePuckConfigOptions = {}): Config 
       // navegación
       Navbar,
       Footer,
-    },
+    }),
     categories: {
       estructura: {
         title: "Estructura",
