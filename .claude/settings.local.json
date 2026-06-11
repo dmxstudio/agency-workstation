@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:payloadcms.com)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:clerk.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:puckeditor.com)",
+      "WebFetch(domain:registry.npmjs.org)",
+      "WebFetch(domain:neon.com)",
+      "Bash(npm --version)",
+      "Bash(echo \"npm: $\\(npm --version 2>/dev/null || echo MISSING\\)\")",
+      "Bash(pnpm --version)",
+      "Bash(echo \"pnpm: $\\(pnpm --version 2>/dev/null || echo MISSING\\)\")",
+      "Bash(git --version)",
+      "Bash(brew --version)",
+      "Bash(echo \"brew: $\\(brew --version)"
+    ]
+  }
+}
