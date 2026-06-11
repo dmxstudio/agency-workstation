@@ -57,6 +57,22 @@ export const taskKindEnum = pgEnum("task_kind", ["derived", "manual"]);
 
 export const taskStatusEnum = pgEnum("task_status", ["open", "done"]);
 
+/** §7.3 — kind of generator run over the generated project repo. */
+export const generationKindEnum = pgEnum("generation_kind", [
+  "generate",
+  "regenerate",
+]);
+
+/**
+ * §18.2 — outcome of a generator run. `conflicts` means the run completed but
+ * reported conflicts that require human resolution (never auto-resolved).
+ */
+export const generationStatusEnum = pgEnum("generation_status", [
+  "success",
+  "conflicts",
+  "error",
+]);
+
 // ---------------------------------------------------------------------------
 // Platform core: users, sessions, workspaces, projects
 // ---------------------------------------------------------------------------
@@ -381,6 +397,46 @@ export const tasks = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Generations (§7.3, §18.2): runs of the project generator over the per-project
+// git repo (.data/projects/<projectId>/). The summary is the structured result
+// the UI renders (written/created/preserved/skipped/conflicts).
+// ---------------------------------------------------------------------------
+
+export const generations = pgTable(
+  "generations",
+  {
+    id: text("id").primaryKey(), // gen_
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: generationKindEnum("kind").notNull(),
+    status: generationStatusEnum("status").notNull(),
+    /**
+     * Structured run result:
+     * `{ written: string[], created: string[], preserved: string[],
+     *    skipped: string[], deletedOrphans: string[], conflicts: Conflict[] }`
+     * (typed/validated in `src/modules/generator`).
+     */
+    summary: jsonb("summary").notNull(),
+    /** Human-readable error when `status = "error"`. */
+    error: text("error"),
+    /** Always a human session user — generation is a human-triggered mutation. */
+    actorId: text("actor_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("generations_project_id_created_at_idx").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Relations (for the drizzle relational query API)
 // ---------------------------------------------------------------------------
 
@@ -420,6 +476,15 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   artifacts: many(artifacts),
   tasks: many(tasks),
   agentRuns: many(agentRuns),
+  generations: many(generations),
+}));
+
+export const generationsRelations = relations(generations, ({ one }) => ({
+  project: one(projects, {
+    fields: [generations.projectId],
+    references: [projects.id],
+  }),
+  actor: one(users, { fields: [generations.actorId], references: [users.id] }),
 }));
 
 export const artifactsRelations = relations(artifacts, ({ one, many }) => ({
@@ -529,6 +594,8 @@ export type AuditLogEntry = typeof auditLog.$inferSelect;
 export type NewAuditLogEntry = typeof auditLog.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
+export type Generation = typeof generations.$inferSelect;
+export type NewGeneration = typeof generations.$inferInsert;
 
 export type WorkspaceRole = (typeof workspaceRoleEnum.enumValues)[number];
 export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number];
@@ -536,3 +603,5 @@ export type ArtifactStatus = (typeof artifactStatusEnum.enumValues)[number];
 export type VersionOrigin = (typeof versionOriginEnum.enumValues)[number];
 export type TaskKind = (typeof taskKindEnum.enumValues)[number];
 export type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
+export type GenerationKind = (typeof generationKindEnum.enumValues)[number];
+export type GenerationStatus = (typeof generationStatusEnum.enumValues)[number];

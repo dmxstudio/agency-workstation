@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "spikes/puck", "--", "--port", "3018"],
       "port": 3018
+    },
+    {
+      "name": "generated-acme",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", ".data/projects/prj_dnwjvcs7xacb"],
+      "port": 4000
     }
   ]
 }

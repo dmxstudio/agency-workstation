@@ -9,7 +9,8 @@
 - `npm run dev` — dev server (http://localhost:3000)
 - `npm run build` — build de producción
 - `npm run db:migrate` — aplica el schema a la DB (PGlite local por defecto)
-- `npm run db:seed` — datos demo (workspace + proyecto + artefactos)
+- `npm run db:seed` — datos demo (workspace + proyecto con los artefactos requeridos por el Generator aprobados)
+- `npx tsx scripts/e2e-generator.ts` — genera el proyecto demo + drill de conflictos §18.2
 
 ## Stack y decisiones locales
 
@@ -26,13 +27,26 @@ src/modules/platform-core/   auth (adapter+provider), workspaces, proyectos, rol
 src/modules/artifacts/       tipos Zod de artefactos, máquina de estados, versiones, diff
                              estructural, dependencias/outdated, aprobaciones, tareas derivadas
 src/modules/spec-os/         formularios tipados de las 6 secciones de spec
-src/modules/{generator,studio,review,deploy,agents}/  futuros — NO implementar sin volver a la spec
+src/modules/generator/       generación/regeneración parcial (§7.3, §18.2): renderers
+                             deterministas desde versiones SELLADAS, manifest de ownership,
+                             conflictos como dato, git local por proyecto
+src/modules/{studio,review,deploy,agents}/  futuros — NO implementar sin volver a la spec
 src/ui/                      design system de la plataforma (tokens §11.4 + componentes)
 src/app/                     rutas App Router (pantallas componen módulos; lógica vive en módulos)
-scripts/                     migrate.ts, seed.ts
+templates/project-base/      template del proyecto generado (Next+Payload+Puck, autocontenido,
+                             node_modules y tsconfig propios; contrato en su TEMPLATE.md)
+scripts/                     migrate.ts, seed.ts, e2e-generator.ts, smoke-*.ts
 ```
 
-Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles) y `spec-os → artifacts`.
+Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts` y `generator → artifacts` (consume los tipos Zod y las versiones aprobadas).
+
+## Generator: convenciones de ownership (§18.2)
+
+- Los proyectos generados viven en `.data/projects/<projectId>/`, un repo git por proyecto (override: `GENERATED_PROJECTS_DIR`). La plataforma escribe SOLO vía commits descriptivos (`generate:` / `regenerate:`) y nunca ejecuta `npm install` dentro (eso es paso del usuario).
+- Ownership **por archivo completo** en `ownership.manifest.json`: `codegen` (con sha256; la regeneración lo reescribe solo si está prístino) o `human` (scaffold único; jamás se reescribe). Lo que no está en el manifest es territorio del proyecto. Excepción única: el campo `name` de `package.json` se escribe una vez en la generación inicial (JSON-merge fuera del manifest).
+- Zonas codegen (`site.config.ts`, `src/generated/`, `src/collections/`, `src/seed/`): se purgan del template en el generate inicial — no añadir archivos no-codegen ahí (contrato en `render.ts` y `TEMPLATE.md`).
+- Render 100% determinista (sin timestamps ni aleatoriedad, ordenación estable): la idempotencia se verifica por hash. Conflictos = dato (`GenerationSummary.conflicts`), nunca auto-resolución.
+- Verificación: `npx tsx scripts/smoke-generator.ts` (aislado, se limpia solo) y `npx tsx scripts/e2e-generator.ts` (genera el proyecto demo + drill de conflictos; re-runnable).
 
 ## Restricciones no negociables (§19)
 
@@ -41,11 +55,11 @@ Regla de dependencia entre módulos: `app → modules → db`. Los módulos no s
 3. La propagación de `outdated` **marca, nunca regenera** (§8.4).
 4. Auth siempre vía adapter; cero imports del proveedor en módulos de producto.
 5. UI solo con tokens del design system (§11.4): monocromo + acentos semánticos; violeta/cyan reservado EXCLUSIVAMENTE a actividad de agentes; mono obligatoria para IDs, versiones, diffs y logs. Sin gradientes decorativos, sin glassmorphism, sin sombras pesadas.
-6. Cero código AGPL (Webstudio prohibido). Puck/Payload (MIT) llegarán en fases posteriores.
+6. Cero código AGPL (Webstudio prohibido). Puck/Payload (MIT) viven SOLO en el proyecto generado (`templates/project-base/`); la plataforma no los importa y los proyectos generados no dependen de ningún paquete de la plataforma en runtime.
 
 ## Convenciones
 
-- IDs: prefijados + aleatorios, p.ej. `usr_x7k2…`, `ws_…`, `prj_…`, `art_…`, `ver_…`, `run_…` (util en `src/db/ids.ts`).
+- IDs: prefijados + aleatorios, p.ej. `usr_x7k2…`, `ws_…`, `prj_…`, `art_…`, `ver_…`, `run_…`, `gen_…` (util en `src/db/ids.ts`).
 - Estados de artefacto: `empty | draft | in_review | approved | locked` + flags transversales `outdated`/`rejected` (§8.2). `approved` y `outdated` pueden coexistir.
 - Payloads de artefacto: JSONB validado con Zod **en cada escritura** (schemas en `src/modules/artifacts/types/`).
 - Server Actions para mutaciones (en `src/modules/*/actions.ts`, con `"use server"`); las pantallas no llaman a la DB directamente.

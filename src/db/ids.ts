@@ -20,6 +20,7 @@ export const ID_PREFIXES = {
   agentRun: "run",
   task: "tsk",
   auditEvent: "evt",
+  generation: "gen",
 } as const;
 
 export type IdEntity = keyof typeof ID_PREFIXES;
@@ -55,4 +56,5 @@ export const newId = {
   agentRun: () => generateId(ID_PREFIXES.agentRun),
   task: () => generateId(ID_PREFIXES.task),
   auditEvent: () => generateId(ID_PREFIXES.auditEvent),
+  generation: () => generateId(ID_PREFIXES.generation),
 } satisfies Record<IdEntity, () => string>;

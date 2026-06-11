@@ -1,0 +1,434 @@
+{
+  "$comment": "@generated-example — OWNED-BY-CODEGEN. Content fixtures emitted from the content.page artifacts (page compositions) and sample CMS data. Loaded once by `npm run seed`. CMS binding placeholders use { \"$seedRef\": { \"collection\": \"…\", \"index\": n } } and resolve to { collection, docId, ...snapshot } at seed time. Do not edit by hand.",
+  "collections": {
+    "testimonials": [
+      {
+        "author": "Lucía Ferrer",
+        "role": "Head of Digital",
+        "company": "Atlántica Foods",
+        "quote": "Pasamos de tres semanas a tres días por landing. La coherencia visual vino de serie.",
+        "rating": 5
+      },
+      {
+        "author": "Marc Soler",
+        "role": "CTO",
+        "company": "Verda Energy",
+        "quote": "El equipo edita contenido sin miedo: nadie puede romper la tipografía ni el layout.",
+        "rating": 5
+      },
+      {
+        "author": "Irene Castaño",
+        "role": "Directora de Marca",
+        "company": "Museo Lume",
+        "quote": "Publicamos la web nueva en una semana, con revisión y aprobación de cada página.",
+        "rating": 4
+      }
+    ],
+    "posts": [
+      {
+        "title": "Rediseñar sin rehacer: secciones gobernadas",
+        "excerpt": "Cómo un registry de componentes tipados acelera cada proyecto sin sacrificar marca.",
+        "category": "Diseño",
+        "publishedAt": "2026-05-12"
+      },
+      {
+        "title": "Contenido vivo: bindings CMS en páginas compuestas",
+        "excerpt": "La página referencia el documento; el contenido se actualiza solo al editarlo en el CMS.",
+        "category": "Ingeniería",
+        "publishedAt": "2026-04-28"
+      },
+      {
+        "title": "Caso: lanzamiento de Atlántica Foods",
+        "excerpt": "Ocho páginas, tres rondas de revisión y un deploy sin sustos.",
+        "category": "Casos",
+        "publishedAt": "2026-03-19"
+      },
+      {
+        "title": "Por qué el cliente revisa con un enlace, no con un PDF",
+        "excerpt": "Comentarios anclados a la página real, no capturas en un correo.",
+        "category": "Producto",
+        "publishedAt": "2026-02-25"
+      }
+    ]
+  },
+  "pages": [
+    {
+      "title": "Inicio",
+      "path": "home",
+      "description": "Estudio de diseño y desarrollo web. Marcas que se entienden a la primera.",
+      "publish": true,
+      "content": [
+        {
+          "type": "Navbar",
+          "props": {
+            "id": "Navbar-home-1",
+            "brand": "Estudio Demo",
+            "tone": "light",
+            "sticky": true,
+            "links": [
+              { "label": "Inicio", "href": "/" },
+              { "label": "Nosotros", "href": "/about" },
+              { "label": "Blog", "href": "/blog" },
+              { "label": "Contacto", "href": "/contact" }
+            ],
+            "ctaLabel": "Hablemos",
+            "ctaHref": "/contact"
+          }
+        },
+        {
+          "type": "Hero",
+          "props": {
+            "id": "Hero-home-2",
+            "eyebrow": "Estudio Demo",
+            "title": "Marcas que se entienden a la primera",
+            "subtitle": "Diseñamos y construimos sitios web que cuentan lo importante sin hacer ruido.",
+            "align": "center",
+            "tone": "light",
+            "padding": "spacious",
+            "size": "large",
+            "primaryCta": "Ver qué hacemos",
+            "primaryCtaHref": "/about",
+            "secondaryCta": "Contactar",
+            "secondaryCtaStyle": "ghost"
+          }
+        },
+        {
+          "type": "LogoCloud",
+          "props": {
+            "id": "LogoCloud-home-3",
+            "title": "Confían en nosotros",
+            "tone": "light",
+            "logos": [
+              { "name": "Atlántica" },
+              { "name": "Verda" },
+              { "name": "Lume" },
+              { "name": "Korto" }
+            ]
+          }
+        },
+        {
+          "type": "Features",
+          "props": {
+            "id": "Features-home-4",
+            "eyebrow": "Servicios",
+            "title": "Qué hacemos",
+            "subtitle": "Estrategia, diseño y desarrollo en un mismo equipo.",
+            "columns": "3",
+            "tone": "subtle",
+            "padding": "normal",
+            "items": [
+              { "icon": "◳", "title": "Identidad digital", "body": "Marca aplicada a producto y web." },
+              { "icon": "▤", "title": "Webs corporativas", "body": "Sitios rápidos, editables y medibles." },
+              { "icon": "◍", "title": "Contenido", "body": "CMS a medida para tu equipo." }
+            ]
+          }
+        },
+        {
+          "type": "TestimonialWall",
+          "props": {
+            "id": "TestimonialWall-home-5",
+            "eyebrow": "Clientes",
+            "title": "Lo que dicen de trabajar con nosotros",
+            "columns": "2",
+            "tone": "light",
+            "padding": "normal",
+            "items": [
+              { "source": { "$seedRef": { "collection": "testimonials", "index": 0 } } },
+              { "source": { "$seedRef": { "collection": "testimonials", "index": 1 } } }
+            ]
+          }
+        },
+        {
+          "type": "CtaBanner",
+          "props": {
+            "id": "CtaBanner-home-6",
+            "title": "¿Empezamos tu proyecto?",
+            "cta": "Contactar",
+            "ctaHref": "/contact",
+            "tone": "brand"
+          }
+        },
+        {
+          "type": "Footer",
+          "props": {
+            "id": "Footer-home-7",
+            "brand": "Estudio Demo",
+            "tagline": "Diseño y código bajo el mismo techo.",
+            "tone": "dark",
+            "columns": [
+              {
+                "title": "Estudio",
+                "links": [
+                  { "label": "Nosotros", "href": "/about" },
+                  { "label": "Blog", "href": "/blog" }
+                ]
+              },
+              {
+                "title": "Contacto",
+                "links": [{ "label": "Escríbenos", "href": "/contact" }]
+              }
+            ],
+            "legal": "© 2026 Estudio Demo. Todos los derechos reservados."
+          }
+        }
+      ]
+    },
+    {
+      "title": "Nosotros",
+      "path": "about",
+      "description": "Quiénes somos y cómo trabajamos.",
+      "publish": true,
+      "content": [
+        {
+          "type": "Navbar",
+          "props": {
+            "id": "Navbar-about-1",
+            "brand": "Estudio Demo",
+            "tone": "light",
+            "sticky": true,
+            "links": [
+              { "label": "Inicio", "href": "/" },
+              { "label": "Nosotros", "href": "/about" },
+              { "label": "Blog", "href": "/blog" },
+              { "label": "Contacto", "href": "/contact" }
+            ],
+            "ctaLabel": "Hablemos",
+            "ctaHref": "/contact"
+          }
+        },
+        {
+          "type": "HeroMinimal",
+          "props": {
+            "id": "HeroMinimal-about-2",
+            "title": "Diseño y código bajo el mismo techo.",
+            "tone": "dark",
+            "padding": "spacious"
+          }
+        },
+        {
+          "type": "ImageText",
+          "props": {
+            "id": "ImageText-about-3",
+            "title": "Un equipo pequeño con criterio",
+            "body": "Trabajamos pocos proyectos a la vez para cuidar cada decisión: de la estrategia al último píxel.",
+            "mediaSide": "left",
+            "tone": "light",
+            "padding": "normal"
+          }
+        },
+        {
+          "type": "Team",
+          "props": {
+            "id": "Team-about-4",
+            "title": "El equipo",
+            "tone": "subtle",
+            "padding": "normal",
+            "members": [
+              { "name": "Alex", "role": "Design Engineer" },
+              { "name": "Sam", "role": "Estrategia" },
+              { "name": "Mar", "role": "Contenido" }
+            ]
+          }
+        },
+        {
+          "type": "Quote",
+          "props": {
+            "id": "Quote-about-5",
+            "quote": "La mejor web es la que tu equipo puede mantener sin llamarnos.",
+            "attribution": "Manifiesto del estudio",
+            "tone": "light",
+            "padding": "normal"
+          }
+        },
+        {
+          "type": "Footer",
+          "props": {
+            "id": "Footer-about-6",
+            "brand": "Estudio Demo",
+            "tagline": "Diseño y código bajo el mismo techo.",
+            "tone": "dark",
+            "columns": [
+              {
+                "title": "Estudio",
+                "links": [
+                  { "label": "Nosotros", "href": "/about" },
+                  { "label": "Blog", "href": "/blog" }
+                ]
+              },
+              {
+                "title": "Contacto",
+                "links": [{ "label": "Escríbenos", "href": "/contact" }]
+              }
+            ],
+            "legal": "© 2026 Estudio Demo. Todos los derechos reservados."
+          }
+        }
+      ]
+    },
+    {
+      "title": "Blog",
+      "path": "blog",
+      "description": "Notas sobre diseño, contenido y producto.",
+      "publish": true,
+      "content": [
+        {
+          "type": "Navbar",
+          "props": {
+            "id": "Navbar-blog-1",
+            "brand": "Estudio Demo",
+            "tone": "light",
+            "sticky": true,
+            "links": [
+              { "label": "Inicio", "href": "/" },
+              { "label": "Nosotros", "href": "/about" },
+              { "label": "Blog", "href": "/blog" },
+              { "label": "Contacto", "href": "/contact" }
+            ],
+            "ctaLabel": "Hablemos",
+            "ctaHref": "/contact"
+          }
+        },
+        {
+          "type": "HeroMinimal",
+          "props": {
+            "id": "HeroMinimal-blog-2",
+            "title": "Notas del estudio.",
+            "tone": "light",
+            "padding": "compact"
+          }
+        },
+        {
+          "type": "PostFeature",
+          "props": {
+            "id": "PostFeature-blog-3",
+            "post": { "$seedRef": { "collection": "posts", "index": 0 } },
+            "tone": "subtle",
+            "padding": "normal"
+          }
+        },
+        {
+          "type": "BlogPosts",
+          "props": {
+            "id": "BlogPosts-blog-4",
+            "title": "Últimos artículos",
+            "tone": "light",
+            "padding": "normal",
+            "items": [
+              { "source": { "$seedRef": { "collection": "posts", "index": 1 } } },
+              { "source": { "$seedRef": { "collection": "posts", "index": 2 } } },
+              { "source": { "$seedRef": { "collection": "posts", "index": 3 } } }
+            ]
+          }
+        },
+        {
+          "type": "Newsletter",
+          "props": {
+            "id": "Newsletter-blog-5",
+            "title": "Recibe lo nuevo",
+            "subtitle": "Un correo al mes. Sin spam.",
+            "buttonLabel": "Suscribirme",
+            "tone": "subtle",
+            "padding": "normal"
+          }
+        },
+        {
+          "type": "Footer",
+          "props": {
+            "id": "Footer-blog-6",
+            "brand": "Estudio Demo",
+            "tagline": "Diseño y código bajo el mismo techo.",
+            "tone": "dark",
+            "columns": [
+              {
+                "title": "Estudio",
+                "links": [
+                  { "label": "Nosotros", "href": "/about" },
+                  { "label": "Blog", "href": "/blog" }
+                ]
+              },
+              {
+                "title": "Contacto",
+                "links": [{ "label": "Escríbenos", "href": "/contact" }]
+              }
+            ],
+            "legal": "© 2026 Estudio Demo. Todos los derechos reservados."
+          }
+        }
+      ]
+    },
+    {
+      "title": "Contacto",
+      "path": "contact",
+      "description": "Cuéntanos tu proyecto.",
+      "publish": true,
+      "content": [
+        {
+          "type": "Navbar",
+          "props": {
+            "id": "Navbar-contact-1",
+            "brand": "Estudio Demo",
+            "tone": "light",
+            "sticky": true,
+            "links": [
+              { "label": "Inicio", "href": "/" },
+              { "label": "Nosotros", "href": "/about" },
+              { "label": "Blog", "href": "/blog" },
+              { "label": "Contacto", "href": "/contact" }
+            ],
+            "ctaLabel": "Hablemos",
+            "ctaHref": "/contact"
+          }
+        },
+        {
+          "type": "ContactForm",
+          "props": {
+            "id": "ContactForm-contact-2",
+            "title": "Cuéntanos tu proyecto",
+            "subtitle": "Respondemos en 24 horas laborables.",
+            "layout": "split",
+            "showPhone": true,
+            "tone": "light",
+            "padding": "spacious"
+          }
+        },
+        {
+          "type": "Stats",
+          "props": {
+            "id": "Stats-contact-3",
+            "title": "",
+            "tone": "dark",
+            "padding": "compact",
+            "stats": [
+              { "value": "24h", "label": "respuesta" },
+              { "value": "12", "label": "proyectos al año" },
+              { "value": "100%", "label": "código entregado" }
+            ]
+          }
+        },
+        {
+          "type": "Footer",
+          "props": {
+            "id": "Footer-contact-4",
+            "brand": "Estudio Demo",
+            "tagline": "Diseño y código bajo el mismo techo.",
+            "tone": "dark",
+            "columns": [
+              {
+                "title": "Estudio",
+                "links": [
+                  { "label": "Nosotros", "href": "/about" },
+                  { "label": "Blog", "href": "/blog" }
+                ]
+              },
+              {
+                "title": "Contacto",
+                "links": [{ "label": "Escríbenos", "href": "/contact" }]
+              }
+            ],
+            "legal": "© 2026 Estudio Demo. Todos los derechos reservados."
+          }
+        }
+      ]
+    }
+  ]
+}

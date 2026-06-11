@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import {
   Database,
+  FolderGit2,
   LayoutDashboard,
   LogOut,
   MessageSquareText,
@@ -163,6 +164,14 @@ export default async function ProjectLayout({
           >
             <LayoutDashboard size={14} strokeWidth={1.75} aria-hidden />
             Cockpit
+          </NavLink>
+          <NavLink
+            href={`${basePath}/generator`}
+            className={navItemClass}
+            activeClassName={navItemActiveClass}
+          >
+            <FolderGit2 size={14} strokeWidth={1.75} aria-hidden />
+            Generator
           </NavLink>
 
           <SectionLabel>Spec OS</SectionLabel>

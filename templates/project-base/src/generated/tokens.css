@@ -1,0 +1,14 @@
+/**
+ * @generated-example — OWNED-BY-CODEGEN
+ * CSS variables emitted from the `design.tokens` spec artifact.
+ * The section registry consumes these through Tailwind utilities
+ * (bg-brand-600, text-brand-200, …) mapped in src/app/(site)/globals.css.
+ * Regenerated on spec changes; do not edit by hand.
+ */
+:root {
+  /* Brand color scale (example values: indigo) */
+  --brand-200: #c7d2fe;
+  --brand-500: #6366f1;
+  --brand-600: #4f46e5;
+  --brand-700: #4338ca;
+}

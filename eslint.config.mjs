@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Not platform code (own tsconfig/node_modules/lint): runtime data with
+    // generated projects, the generated-project template and the spikes.
+    ".data/**",
+    "templates/**",
+    "spikes/**",
   ]),
 ]);
 

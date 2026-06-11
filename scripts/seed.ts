@@ -4,19 +4,29 @@
  * Creates:
  * - Demo user        demo@agency.local / demo1234 (admin)
  * - Workspace        "Demo Agency" (slug `demo`)
- * - Project          "Sitio Corporativo Acme" with the 8 MVP artifacts
- *   - spec.intake    approved v2 (two immutable versions, kickoff + re-scope)
- *   - spec.strategy  approved v1 AND flagged `outdated` (marked by the
- *     propagation of intake v2 — §8.4: marks, never regenerates)
- *   - spec.sitemap   draft (pending review)
- * - Derived task "Re-validar «Estrategia»…" (opened by the propagation)
- * - One open manual task
- * - Activity feed entries (project created, drafts, reviews, approvals…)
+ * - Project          "Sitio Corporativo Acme" with the 8 MVP artifacts and a
+ *   coherent history (§13 cycle on every approval):
+ *   - spec.intake       approved v2 (kickoff + re-scope: careers page added)
+ *   - spec.strategy     approved v2 (v1 was flagged `outdated` by intake v2
+ *     — §8.4 marks, never regenerates — and re-validated as v2 with the new
+ *     "candidatos técnicos" audience)
+ *   - spec.sitemap      approved v1 (an earlier draft predates the re-scope;
+ *     the sealed version adds the `carreras` page)
+ *   - design.tokens     approved v1 (Acme corporate palette → brand-* vars)
+ *   - cms.collections   approved v1 (case-studies, job-openings, testimonials)
+ *   - content.page      approved v1 (copy + SEO for inicio/servicios/contacto)
+ *   - page.composition  approved v1 (servicios composed with a CMS binding)
+ *   - release           empty (deploy is a future phase)
+ * - One open manual task + the activity/audit feed of the whole story
+ *
+ * The three artifacts the Generator REQUIRES (§7.3: spec.sitemap,
+ * cms.collections, design.tokens) end up approved, so the demo project is
+ * generable right after seeding (see scripts/e2e-generator.ts).
  *
  * Everything flows through the real domain services (`createWorkspace`,
  * `createProject`, `saveDraft`, `submitForReview`, `approve`), so states,
- * versions, derived tasks and audit events are produced by the same code
- * paths the app uses.
+ * sealed versions, derived tasks and audit events are produced by the same
+ * code paths the app uses.
  *
  * Idempotency: if the demo project already exists the seed prints the
  * credentials and exits without touching anything. To re-generate from
@@ -46,6 +56,10 @@ import {
   submitForReview,
   type HumanActor,
 } from "../src/modules/artifacts/service";
+import type { CmsCollectionsPayload } from "../src/modules/artifacts/types/cms-collections";
+import type { ContentPagePayload } from "../src/modules/artifacts/types/content-page";
+import type { DesignTokensPayload } from "../src/modules/artifacts/types/design-tokens";
+import type { PageCompositionPayload } from "../src/modules/artifacts/types/page-composition";
 import type { SpecIntakePayload } from "../src/modules/artifacts/types/spec-intake";
 import type { SpecSitemapPayload } from "../src/modules/artifacts/types/spec-sitemap";
 import type { SpecStrategyPayload } from "../src/modules/artifacts/types/spec-strategy";
@@ -259,6 +273,326 @@ const sitemapDraft: SpecSitemapPayload = {
   },
 };
 
+/**
+ * v2 de la estrategia: re-validación tras la ampliación de alcance del intake
+ * (página de carreras) — añade la audiencia de talento técnico.
+ */
+const strategyV2: SpecStrategyPayload = {
+  ...strategyV1,
+  audiences: [
+    ...strategyV1.audiences,
+    {
+      name: "Candidatos técnicos (talento)",
+      description:
+        "Perfiles de ingeniería y oficios industriales que evalúan a Acme como empleador desde la nueva página de carreras.",
+      needs: [
+        "Ver vacantes activas con requisitos y ubicación claros",
+        "Entender la estabilidad y el proyecto industrial de la empresa",
+      ],
+    },
+  ],
+};
+
+/**
+ * Sitemap final aprobado: IA simplificada tras la re-validación de la
+ * estrategia. Los casos de éxito pasan a vivir como colección CMS bindeada en
+ * «Servicios» (en lugar de una página propia) y se añade «Carreras» (alcance
+ * v2 del intake).
+ */
+const sitemapFinal: SpecSitemapPayload = {
+  pages: [
+    {
+      title: "Inicio",
+      slug: "inicio",
+      description: "Propuesta de valor, líneas de producto y casos destacados.",
+      children: [],
+    },
+    {
+      title: "Servicios",
+      slug: "servicios",
+      description:
+        "Maquinaria de envasado, líneas de producción y mantenimiento, con casos de éxito desde el CMS.",
+      children: [],
+    },
+    {
+      title: "Nosotros",
+      slug: "nosotros",
+      description: "Historia, planta de producción y certificaciones.",
+      children: [],
+    },
+    {
+      title: "Blog",
+      slug: "blog",
+      description: "Noticias y actualidad técnica de Acme.",
+      children: [],
+    },
+    {
+      title: "Carreras",
+      slug: "carreras",
+      description: "Vacantes activas gestionadas desde el CMS.",
+      children: [],
+    },
+    {
+      title: "Contacto",
+      slug: "contacto",
+      description: "Formulario de solicitud de presupuesto conectado a HubSpot.",
+      children: [],
+    },
+  ],
+  navigation: {
+    header: ["inicio", "servicios", "nosotros", "blog", "contacto"],
+    footer: ["servicios", "blog", "carreras", "contacto"],
+  },
+};
+
+/** Paleta corporativa de Acme (azul #003D7A) sobre las claves `brand-*` que el template mapea a utilities Tailwind. */
+const tokensV1: DesignTokensPayload = {
+  colors: {
+    "brand-200": "#c4d7eb",
+    "brand-500": "#1e5a96",
+    "brand-600": "#003d7a",
+    "brand-700": "#002b56",
+  },
+  typography: {
+    fontFamilies: {
+      sans: '"Inter", system-ui, sans-serif',
+      mono: '"JetBrains Mono", monospace',
+    },
+    baseSizePx: 16,
+    scaleRatio: 1.25,
+  },
+  spacing: { sm: "0.5rem", md: "1rem", lg: "2rem", xl: "4rem" },
+  radii: { sm: "0.25rem", md: "0.5rem" },
+  components: [
+    "Navbar",
+    "Hero",
+    "Features",
+    "ImageText",
+    "Cta",
+    "Stats",
+    "ContactForm",
+    "Footer",
+  ],
+};
+
+/** Modelo de datos del CMS: 3 colecciones realistas para el sitio de Acme. */
+const collectionsV1: CmsCollectionsPayload = {
+  collections: [
+    {
+      slug: "case-studies",
+      label: "Casos de éxito",
+      description:
+        "Proyectos entregados con resultados medibles; alimentan la página de servicios.",
+      fields: [
+        { name: "title", label: "Título", type: "text", required: true, hasMany: false },
+        { name: "summary", label: "Resumen", type: "richText", required: true, hasMany: false },
+        {
+          name: "sector",
+          label: "Sector",
+          type: "select",
+          options: ["Alimentación", "Farmacéutico", "Cosmética", "Logística"],
+          required: false,
+          hasMany: false,
+        },
+        {
+          name: "outcome",
+          label: "Resultado medible",
+          type: "text",
+          required: false,
+          hasMany: false,
+        },
+        {
+          name: "deliveredAt",
+          label: "Fecha de entrega",
+          type: "date",
+          required: false,
+          hasMany: false,
+        },
+      ],
+      timestamps: true,
+    },
+    {
+      slug: "job-openings",
+      label: "Vacantes",
+      description: "Ofertas de empleo publicadas en la página de carreras.",
+      fields: [
+        { name: "title", label: "Puesto", type: "text", required: true, hasMany: false },
+        {
+          name: "department",
+          label: "Departamento",
+          type: "select",
+          options: ["Ingeniería", "Producción", "SAT", "Comercial"],
+          required: false,
+          hasMany: false,
+        },
+        { name: "location", label: "Ubicación", type: "text", required: false, hasMany: false },
+        {
+          name: "description",
+          label: "Descripción",
+          type: "richText",
+          required: false,
+          hasMany: false,
+        },
+        {
+          name: "active",
+          label: "Vacante activa",
+          type: "boolean",
+          required: false,
+          hasMany: false,
+        },
+      ],
+      timestamps: true,
+    },
+    {
+      slug: "testimonials",
+      label: "Testimonios",
+      description: "Citas de clientes; opcionalmente enlazadas a un caso de éxito.",
+      fields: [
+        { name: "author", label: "Autor", type: "text", required: true, hasMany: false },
+        { name: "role", label: "Cargo", type: "text", required: false, hasMany: false },
+        { name: "company", label: "Empresa", type: "text", required: false, hasMany: false },
+        { name: "quote", label: "Cita", type: "richText", required: true, hasMany: false },
+        {
+          name: "caseStudy",
+          label: "Caso relacionado",
+          type: "relation",
+          relationTo: "case-studies",
+          required: false,
+          hasMany: false,
+        },
+      ],
+      timestamps: true,
+    },
+  ],
+};
+
+/** Sistema de contenido: mensajes clave + copy y SEO de 3 páginas. */
+const contentV1: ContentPagePayload = {
+  keyMessages: [
+    "Maquinaria fiable que reduce paradas de producción",
+    "Servicio técnico propio en menos de 24 horas",
+    "40 años fabricando en España",
+  ],
+  pages: [
+    {
+      slug: "inicio",
+      title: "Inicio",
+      sections: [
+        {
+          id: "hero",
+          heading: "Maquinaria de envasado que no se detiene",
+          body: "Diseñamos y fabricamos líneas de envasado con servicio técnico propio: respuesta en menos de 24 horas en toda la península.",
+          cta: { label: "Solicitar presupuesto", href: "/contacto" },
+        },
+        {
+          id: "lineas",
+          heading: "Líneas de producto",
+          body: "Envasadoras verticales y horizontales, llenadoras volumétricas y líneas completas llave en mano adaptadas a su planta.",
+        },
+        {
+          id: "sat",
+          heading: "SAT propio y repuestos originales",
+          body: "Stock permanente de repuestos y técnicos propios en toda la península: su producción no espera.",
+          cta: { label: "Conocer el servicio técnico", href: "/servicios" },
+        },
+      ],
+      seo: {
+        title: "Acme Industrial — Maquinaria de envasado",
+        description:
+          "Fabricante de maquinaria de envasado con servicio técnico propio en 24 horas. 40 años de experiencia.",
+        keywords: ["maquinaria de envasado", "líneas de producción", "SAT industrial"],
+      },
+    },
+    {
+      slug: "servicios",
+      title: "Servicios",
+      sections: [
+        {
+          id: "hero",
+          heading: "Un único proveedor para toda la vida útil de su maquinaria",
+          body: "De la ingeniería de línea al mantenimiento preventivo, con un equipo propio de principio a fin.",
+        },
+        {
+          id: "maquinaria",
+          heading: "Maquinaria de envasado",
+          body: "Envasadoras a medida para alimentación, farmacia y cosmética, integradas con sus sistemas MES/ERP.",
+        },
+        {
+          id: "mantenimiento",
+          heading: "Mantenimiento y repuestos",
+          body: "Contratos de mantenimiento preventivo con SLA de 24 horas y stock de repuestos originales.",
+          cta: { label: "Pedir una auditoría de línea", href: "/contacto" },
+        },
+      ],
+      seo: {
+        title: "Servicios — Acme Industrial",
+        description:
+          "Maquinaria de envasado, líneas de producción y mantenimiento con SLA de 24 horas.",
+        keywords: ["mantenimiento industrial", "envasadoras", "líneas de envasado"],
+      },
+    },
+    {
+      slug: "contacto",
+      title: "Contacto",
+      sections: [
+        {
+          id: "hero",
+          heading: "Cuéntenos su proyecto",
+          body: "Respondemos a toda solicitud de presupuesto en menos de 24 horas laborables.",
+        },
+        {
+          id: "datos",
+          body: "Polígono Industrial Norte, nave 12 · 28850 Torrejón de Ardoz (Madrid) · +34 916 000 000 · ventas@acme-industrial.example",
+        },
+      ],
+      seo: {
+        title: "Contacto — Acme Industrial",
+        description:
+          "Solicite presupuesto para su línea de envasado: respuesta en menos de 24 horas laborables.",
+        keywords: ["presupuesto maquinaria de envasado"],
+      },
+    },
+  ],
+};
+
+/**
+ * Composición inicial de «Servicios» con un binding CMS (`body` ←
+ * `case-studies.summary`). El binding es el que la regeneración vigila: si una
+ * versión futura de `cms.collections` elimina ese campo, el conflicto
+ * `binding-missing-field` aparece en la pantalla del Generator
+ * (scripts/e2e-generator.ts lo demuestra).
+ */
+const compositionsV1: PageCompositionPayload = {
+  pages: [
+    {
+      slug: "servicios",
+      sections: [
+        {
+          id: "intro",
+          component: "Hero",
+          props: {
+            title: "Un único proveedor para toda la vida útil de su maquinaria",
+            subtitle: "Ingeniería, fabricación y mantenimiento con equipo propio.",
+          },
+          bindings: {},
+        },
+        {
+          id: "caso-destacado",
+          component: "ImageText",
+          props: { title: "Caso destacado" },
+          bindings: { body: "case-studies.summary" },
+        },
+        {
+          id: "cierre",
+          component: "Cta",
+          props: { title: "Pedir una auditoría de línea", ctaHref: "/contacto" },
+          bindings: {},
+        },
+      ],
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
@@ -346,7 +680,11 @@ async function main(): Promise<void> {
   const intake = byType.get("spec.intake");
   const strategy = byType.get("spec.strategy");
   const sitemap = byType.get("spec.sitemap");
-  if (!intake || !strategy || !sitemap) {
+  const tokens = byType.get("design.tokens");
+  const collections = byType.get("cms.collections");
+  const content = byType.get("content.page");
+  const composition = byType.get("page.composition");
+  if (!intake || !strategy || !sitemap || !tokens || !collections || !content || !composition) {
     throw new Error("El grafo de artefactos del proyecto demo no se instanció correctamente.");
   }
 
@@ -381,6 +719,60 @@ async function main(): Promise<void> {
     `spec.intake: v2 aprobada; propagación outdated → ${reapproval.outdatedDependentIds.length} dependiente(s) marcados (spec.strategy).`,
   );
 
+  // --- spec.strategy v2 → re-validación que limpia el flag (§8.4) -----------
+  await saveDraft(strategy.id, strategyV2, actor);
+  await submitForReview(strategy.id, actor);
+  await approve(
+    strategy.id,
+    actor,
+    "Re-validada tras la ampliación de alcance: se añade la audiencia de talento técnico.",
+  );
+  console.log("spec.strategy: v2 aprobada (re-validación; el flag outdated se limpia).");
+
+  // --- spec.sitemap → versión final aprobada ---------------------------------
+  // (La propagación de strategy v2 marcó el borrador como outdated; aprobar la
+  // versión final limpia el flag y cierra la tarea derivada.)
+  await saveDraft(sitemap.id, sitemapFinal, actor);
+  await submitForReview(sitemap.id, actor);
+  await approve(
+    sitemap.id,
+    actor,
+    "IA final: los casos de éxito pasan al CMS dentro de «Servicios» y se añade «Carreras».",
+  );
+  console.log("spec.sitemap: v1 aprobada (6 páginas, incluye «Carreras»).");
+
+  // --- design.tokens → approved v1 -------------------------------------------
+  await saveDraft(tokens.id, tokensV1, actor);
+  await submitForReview(tokens.id, actor);
+  await approve(tokens.id, actor, "Paleta corporativa validada con el manual de marca de Acme.");
+  console.log("design.tokens: v1 aprobada (paleta brand-* + tipografía).");
+
+  // --- cms.collections → approved v1 -----------------------------------------
+  await saveDraft(collections.id, collectionsV1, actor);
+  await submitForReview(collections.id, actor);
+  await approve(
+    collections.id,
+    actor,
+    "Modelo de datos validado: casos de éxito, vacantes y testimonios.",
+  );
+  console.log("cms.collections: v1 aprobada (case-studies, job-openings, testimonials).");
+
+  // --- content.page → approved v1 --------------------------------------------
+  await saveDraft(content.id, contentV1, actor);
+  await submitForReview(content.id, actor);
+  await approve(content.id, actor, "Copy y SEO aprobados por el cliente.");
+  console.log("content.page: v1 aprobada (inicio, servicios, contacto).");
+
+  // --- page.composition → approved v1 ----------------------------------------
+  await saveDraft(composition.id, compositionsV1, actor);
+  await submitForReview(composition.id, actor);
+  await approve(
+    composition.id,
+    actor,
+    "Composición inicial de «Servicios» con binding al CMS (case-studies.summary).",
+  );
+  console.log("page.composition: v1 aprobada («Servicios» con binding CMS).");
+
   // --- Manual open task (mirrors the Cockpit's create-task action) ----------
   await db.transaction(async (tx) => {
     const inserted = await tx
@@ -413,10 +805,18 @@ async function main(): Promise<void> {
   console.log("Tarea manual abierta creada.");
 
   console.log("\nSeed completado:");
-  console.log("  - spec.intake    approved (v2, 2 versiones inmutables)");
-  console.log("  - spec.strategy  approved (v1) + flag outdated (propagación §8.4)");
-  console.log("  - spec.sitemap   draft");
-  console.log("  - 1 tarea derivada de re-validación + 1 tarea manual abiertas");
+  console.log("  - spec.intake       approved v2 (2 versiones inmutables)");
+  console.log("  - spec.strategy     approved v2 (marcada outdated por intake v2 y re-validada)");
+  console.log("  - spec.sitemap      approved v1 (6 páginas; borrador previo al re-scope)");
+  console.log("  - design.tokens     approved v1");
+  console.log("  - cms.collections   approved v1 (3 colecciones)");
+  console.log("  - content.page      approved v1 (3 páginas con copy/SEO)");
+  console.log("  - page.composition  approved v1 (binding case-studies.summary)");
+  console.log("  - release           empty (fase futura)");
+  console.log("  - 1 tarea manual abierta");
+  console.log("\nEl proyecto demo es GENERABLE: los 3 artefactos requeridos por el");
+  console.log("Generator están aprobados. Siguiente paso:");
+  console.log("  npx tsx scripts/e2e-generator.ts   (o el botón «Generar» en la UI)");
   printCredentials();
 }
 

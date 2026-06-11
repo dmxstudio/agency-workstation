@@ -1,0 +1,16 @@
+@import "tailwindcss";
+@import "../../generated/tokens.css";
+
+/*
+ * Maps the codegen-owned design tokens (src/generated/tokens.css) to Tailwind
+ * utilities. The section registry only uses enumerated variant classes, so
+ * changing tokens.css restyles the whole site without touching components.
+ */
+@theme inline {
+  --color-brand-200: var(--brand-200);
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-700: var(--brand-700);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
