@@ -9,16 +9,19 @@
 - `npm run dev` — dev server (http://localhost:3000)
 - `npm run build` — build de producción
 - `npm run db:migrate` — aplica el schema a la DB (PGlite local por defecto)
-- `npm run db:seed` — datos demo (workspace + proyecto con TODAS las composiciones del sitemap aprobadas, release v1 SELLADO y una ronda de review abierta cuyo link imprime al final; nunca despliega). PGlite es de un solo proceso: parar el dev server antes de cualquier script `tsx` que toque la DB.
+- `npm run db:seed` — datos demo (workspace + proyecto con TODAS las composiciones del sitemap aprobadas, release v1 SELLADO, una ronda de review abierta cuyo link imprime al final, key mock BYOK y UN agent run en `proposed` sobre «nosotros» esperando la decisión humana; nunca despliega). PGlite es de un solo proceso: parar el dev server antes de cualquier script `tsx` que toque la DB.
 - `npx tsx scripts/e2e-generator.ts` — genera el proyecto demo + drill de conflictos §18.2 (OJO: re-crea el repo demo y destruye los tags `release-N`; re-sembrar después)
 - `npx tsx scripts/e2e-studio.ts` — drill del paso 4: edición de composición → diff → aprobación → regeneración → el sitio generado sirve el cambio (incluye el contrato de compatibilidad Studio↔template; misma advertencia: re-crea el repo demo)
-- `npx tsx scripts/e2e-deploy-review.ts` — drill del paso 5: checklist §7.8 → release sellado → deploy(preview) → páginas servidas con anclas → ronda por token → comentario→tarea→resolver → aprobación de cliente → cerrar → rollback → stop (mata todo lo que arranca)
+- `npx tsx scripts/e2e-deploy-review.ts` — drill del paso 5: decide propuestas de composición pendientes (consume el momento demo del run) → checklist §7.8 → release sellado → deploy(preview) → páginas servidas con anclas → ronda por token → comentario→tarea→resolver → aprobación de cliente → cerrar → rollback → stop (mata todo lo que arranca)
+- `npx tsx scripts/e2e-agents.ts` — drill del paso 6: las 5 skills (§9.3) por el runner real con mock → proposed → diff → decisión humana con provenance `agent_run`, reject con feedback, AUTH_FAILED con key falsa sin fugas de plaintext; RESTAURA la demo al final (re-runnable)
+- `npx tsx scripts/smoke-agents-runtime.ts` / `npx tsx scripts/smoke-skills.ts` — smokes del runtime BYOK/proveedores y de las 5 skills + provenance (aislados, se limpian solos)
 
 ## Stack y decisiones locales
 
 - Next.js 16 (App Router) + TypeScript estricto + Tailwind v4. **Leer `AGENTS.md` y `node_modules/next/dist/docs/` antes de escribir código Next — hay breaking changes vs. conocimiento previo.**
 - DB: Drizzle ORM detrás de una factory en `src/db/client.ts`. Driver por defecto: **PGlite** (Postgres embebido, datos en `./.data/pglite/`); si `DATABASE_URL` está definida se usa `pg` (Postgres real). Ningún módulo importa el driver directamente — siempre `getDb()`.
 - Auth: **local dev provider** (email+password con scrypt de `node:crypto`, sesiones httpOnly en DB) detrás del adapter `src/modules/platform-core/auth/adapter.ts`. Clerk llegará después detrás del MISMO adapter (§18.6). Ningún módulo de producto importa el proveedor concreto.
+- BYOK (§16): las API keys LLM del workspace se cifran en reposo con AES-256-GCM; la master key sale de la env **`LLM_KEYS_SECRET`** o, como fallback documentado, se deriva de `AUTH_SECRET` (scrypt, salt fija en `src/modules/agents/keys/crypto.ts`). Las keys jamás se loggean, jamás van al cliente (solo id/label/last4) y jamás llegan a proyectos generados; los runs las referencian por `keyRef` (id), nunca por valor. El proveedor `mock` es de primera clase (demo/e2e offline, determinista, $0, sin key).
 - Package manager: npm. No añadir dependencias sin necesidad real; las ya instaladas cubren el MVP actual.
 
 ## Mapa de módulos (límites explícitos, §19.5)
@@ -53,7 +56,13 @@ src/modules/deploy/         Deploy & Release local (§7.8): interfaz DeployProvi
                              pidfile, status contra la REALIDAD), service.ts (filas
                              `deployments` + audit alrededor del provider; solo releases
                              SELLADOS se despliegan) y actions.ts (sesión + rol)
-src/modules/agents/          futuro — NO implementar sin volver a la spec
+src/modules/agents/          Agent Runtime (§7.9, §9): skills/ (las 5 skills §9.3 — lista
+                             CERRADA — con contrato AgentSkill: prompts versionados en repo,
+                             params Zod, validaciones puras, mocks deterministas, catálogo
+                             estático del registry + bindSkillForRun → contrato del runner),
+                             runtime/ (runner async in-process, proveedores anthropic|openai|
+                             mock tras UNA interfaz, decisiones), keys/ (BYOK AES-256-GCM),
+                             context.ts (Project Context API §9.4)
 src/ui/                      design system de la plataforma (tokens §11.4 + componentes)
 src/app/                     rutas App Router (pantallas componen módulos; lógica vive en módulos)
 templates/project-base/      template del proyecto generado (Next+Payload+Puck, autocontenido,
@@ -61,7 +70,7 @@ templates/project-base/      template del proyecto generado (Next+Payload+Puck, 
 scripts/                     migrate.ts, seed.ts, e2e-generator.ts, e2e-studio.ts, smoke-*.ts
 ```
 
-Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts`, `generator → artifacts`, `studio → artifacts` (consumen los tipos Zod, los bindings compartidos y las versiones aprobadas) y `review → artifacts + generator` (sella releases vía el ciclo de artifacts y valida/tagea el repo generado: requirements, manifest, git tag). `studio ↛ generator`: lo que ambos derivan de la misma spec (tokens CSS, defaults de navegación) se duplica sincronizado y documentado — el contrato lo verifica `scripts/e2e-studio.ts`. `deploy ↛ artifacts/generator/review`: el deploy recibe coordenadas planas (`releaseNumber`, `gitTag`), valida el payload sellado con un schema Zod mínimo propio y duplica sincronizada la resolución de paths del generator (documentado en `deploy/paths.ts`).
+Regla de dependencia entre módulos: `app → modules → db`. Los módulos no se importan entre sí salvo `* → platform-core` (auth/roles), `spec-os → artifacts`, `generator → artifacts`, `studio → artifacts` (consumen los tipos Zod, los bindings compartidos y las versiones aprobadas), `review → artifacts + generator` (sella releases vía el ciclo de artifacts y valida/tagea el repo generado: requirements, manifest, git tag) y `agents → artifacts` (SOLO tipos Zod, bindings compartidos, errores y `saveProposalDraft`; **prohibido importar `approve`/`reject`/las server actions de artifacts** — `scripts/smoke-skills.ts` lo impone con un assert estático). `agents ↛ studio`: los nombres/props del registry que necesita `compose-page-draft` viven en un catálogo estático (`skills/registry-catalog.ts`) verificado contra `createPuckConfig()` por el smoke. `studio ↛ generator`: lo que ambos derivan de la misma spec (tokens CSS, defaults de navegación) se duplica sincronizado y documentado — el contrato lo verifica `scripts/e2e-studio.ts`. `deploy ↛ artifacts/generator/review`: el deploy recibe coordenadas planas (`releaseNumber`, `gitTag`), valida el payload sellado con un schema Zod mínimo propio y duplica sincronizada la resolución de paths del generator (documentado en `deploy/paths.ts`).
 
 ## Deploy local (§7.8) — decisiones
 
@@ -78,13 +87,20 @@ Regla de dependencia entre módulos: `app → modules → db`. Los módulos no s
 - Render 100% determinista (sin timestamps ni aleatoriedad, ordenación estable): la idempotencia se verifica por hash. Conflictos = dato (`GenerationSummary.conflicts`), nunca auto-resolución.
 - Verificación: `npx tsx scripts/smoke-generator.ts` (aislado, se limpia solo) y `npx tsx scripts/e2e-generator.ts` (genera el proyecto demo + drill de conflictos; re-runnable).
 
+## Agent runs: provenance y decisión (§8.3, §8.6, §9.6)
+
+- Un run escribe su propuesta SOLO vía `saveProposalDraft(artifactId, payload, agentRunId)` de `src/modules/artifacts/service.ts` (alias canónico `saveDraftFromAgentRun`, el nombre que el runner detecta): draft validado + `artifacts.proposedByRunId` + audit `artifact.draft_proposed` con `actorId: null`. No está expuesto como server action.
+- Un `saveDraft` HUMANO limpia `proposedByRunId`: el draft deja de ser la propuesta del run (al sellarlo, `origin: "human"`).
+- `approve()`/`reject()` de artifacts leen `proposedByRunId` y, si existe, escriben la decisión EN LA FILA de `agent_runs` directamente vía el schema compartido de `src/db` — atómico con el sellado, sin invertir la dependencia (`artifacts ↛ agents`): approve → versión sellada `origin: "agent_run"` + `agentRunId`, run `approved` + `resultVersion` + `decidedBy/decidedAt`; reject → run `rejected` + `feedback` + `decidedBy/decidedAt`. `recordRunDecision` (agents) es idempotente frente a esa escritura.
+- La aprobación sigue siendo un acto humano auditado (`approvals` + audit log): el origen `agent_run` atribuye el CONTENIDO, no la decisión.
+
 ## Restricciones no negociables (§19)
 
 1. Ninguna ruta de código permite a un agent run transicionar un artefacto a `approved`. Solo humanos con rol.
 2. Versiones de artefacto **inmutables**; soft-delete universal; audit log en toda mutación.
 3. La propagación de `outdated` **marca, nunca regenera** (§8.4).
 4. Auth siempre vía adapter; cero imports del proveedor en módulos de producto.
-5. UI solo con tokens del design system (§11.4): monocromo + acentos semánticos; violeta/cyan reservado EXCLUSIVAMENTE a actividad de agentes; mono obligatoria para IDs, versiones, diffs y logs. Sin gradientes decorativos, sin glassmorphism, sin sombras pesadas.
+5. UI solo con tokens del design system (§11.4): monocromo + acentos semánticos; violeta/cyan (`--accent-agent`) reservado EXCLUSIVAMENTE a actividad de agentes — hoy eso es el panel del asistente, la pantalla de runs y las entradas `agent_run.*` del activity feed, y NADA más; mono obligatoria para IDs, versiones, diffs y logs. Sin gradientes decorativos, sin glassmorphism, sin sombras pesadas.
 6. Cero código AGPL (Webstudio prohibido). **`@puckeditor/core` está permitido en la plataforma SOLO dentro de `src/modules/studio`** (canvas del Visual Studio, misma versión pineada que el template — la compatibilidad de render del Data JSON es sagrada). Payload sigue viviendo SOLO en los proyectos generados (`templates/project-base/`); la plataforma no lo importa y los proyectos generados no dependen de ningún paquete de la plataforma en runtime.
 
 ## Convenciones

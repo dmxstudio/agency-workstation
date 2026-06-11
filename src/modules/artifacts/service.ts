@@ -3,6 +3,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
 import { newId } from "@/db/ids";
 import {
+  agentRuns,
   approvals,
   artifactDependencies,
   artifacts,
@@ -588,6 +589,10 @@ export async function syncCompositionArtifacts(
  * Validates the payload (Zod, on every write) and stores it as the mutable
  * draft (§8.3). Editing an `approved` artifact starts the proposal of its
  * next version (§13 paso 2); drafts in review are frozen until decision.
+ *
+ * A HUMAN save CLEARS `proposedByRunId` (§8.6): once a person edits the
+ * draft, it stops being the agent run's proposal — sealing it later yields
+ * `origin: "human"`. Agent runs write through {@link saveProposalDraft}.
  */
 export async function saveDraft(
   artifactId: string,
@@ -617,6 +622,8 @@ export async function saveDraft(
         // The draft was just validated against the CURRENT schema: keep the
         // row's schemaVersion honest (legacy rows upgrade on their next edit).
         schemaVersion: definition.schemaVersion,
+        // Human edit: the draft is no longer an agent run's proposal (§8.6).
+        proposedByRunId: null,
         updatedAt: new Date(),
       })
       .where(eq(artifacts.id, artifactId))
@@ -635,6 +642,93 @@ export async function saveDraft(
     return updated[0];
   });
 }
+
+// ---------------------------------------------------------------------------
+// saveProposalDraft (agent run proposals, §8.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Persists an agent run's PROPOSAL as the target artifact's draft (§8.6):
+ * same validation and state guards as a human `saveDraft`, plus the
+ * provenance pointer `proposedByRunId`. This is the ONLY write path of the
+ * agents runtime into artifacts, and it can never do more than create a
+ * draft — approve/reject remain human-only (§13, §19).
+ *
+ * NOT exposed as a server action: the public `saveDraftAction` is the human
+ * path (and clears provenance). The agents runner calls this directly.
+ *
+ * Audit: `artifact.draft_proposed` with `actorId: null` — a run never
+ * impersonates a human; the run id travels in `detail`.
+ */
+export async function saveProposalDraft(
+  artifactId: string,
+  payload: unknown,
+  agentRunId: string,
+): Promise<Artifact> {
+  const db = getDb();
+  return db.transaction(async (tx) => {
+    const { artifact, project } = await loadArtifactWithProject(tx, artifactId);
+    const definition = requireDefinition(artifact);
+    assertNotLocked(artifact, definition);
+    if (artifact.status === "in_review") {
+      throw new ArtifactDomainError(
+        "INVALID_STATE",
+        `«${definition.label}» está en revisión; decide sobre esa revisión antes de proponer otra versión.`,
+      );
+    }
+
+    // The run must exist and belong to the SAME project as the artifact.
+    const runRows = await tx
+      .select({ id: agentRuns.id, projectId: agentRuns.projectId, skill: agentRuns.skill })
+      .from(agentRuns)
+      .where(eq(agentRuns.id, agentRunId))
+      .limit(1);
+    const run = runRows[0];
+    if (!run || run.projectId !== project.id) {
+      throw new ArtifactDomainError(
+        "AGENT_RUN_NOT_FOUND",
+        "El agent run de la propuesta no existe o no pertenece a este proyecto.",
+      );
+    }
+
+    const validated = validatePayload(definition, payload);
+
+    const updated = await tx
+      .update(artifacts)
+      .set({
+        draftPayload: validated,
+        status: "draft",
+        schemaVersion: definition.schemaVersion,
+        proposedByRunId: agentRunId,
+        updatedAt: new Date(),
+      })
+      .where(eq(artifacts.id, artifactId))
+      .returning();
+
+    await writeAudit(tx, {
+      workspaceId: project.workspaceId,
+      projectId: project.id,
+      actorId: null,
+      action: "artifact.draft_proposed",
+      entityType: "artifact",
+      entityId: artifactId,
+      detail: {
+        type: artifact.type,
+        agentRunId,
+        skill: run.skill,
+        fromStatus: artifact.status,
+      },
+    });
+
+    return updated[0];
+  });
+}
+
+/**
+ * Canonical name the agents runtime feature-detects on this module
+ * (`src/modules/agents/runtime/proposal-writer.ts`). Same function.
+ */
+export const saveDraftFromAgentRun = saveProposalDraft;
 
 // ---------------------------------------------------------------------------
 // submitForReview
@@ -703,8 +797,14 @@ export interface ApproveResult {
  *
  * ONLY a human with role admin|member can approve. By construction the actor
  * is a session user from the auth adapter — there is no parameter through
- * which an agent run could reach this transition (§8.6; CLAUDE.md #1). The
- * sealed version is therefore always `origin: "human"`.
+ * which an agent run could reach this transition (§8.6; CLAUDE.md #1).
+ *
+ * Provenance (§8.3/§8.6): if the draft was proposed by an agent run
+ * (`artifacts.proposedByRunId`), the sealed version carries
+ * `origin: "agent_run"` + the run id, and the run row records the HUMAN
+ * decision (status `approved`, resultVersion, decidedBy/decidedAt) — written
+ * here, via the shared `src/db` schema, so decision and sealing are atomic.
+ * The approval itself is still a human act, audited as such.
  */
 export async function approve(
   artifactId: string,
@@ -727,8 +827,11 @@ export async function approve(
     // Payloads are validated on EVERY write — sealing a version included.
     const payload = validatePayload(definition, artifact.draftPayload);
     const newVersionNumber = artifact.currentVersion + 1;
+    const proposedByRunId = artifact.proposedByRunId;
 
     // Immutable snapshot (§8.3). INSERT only; this table is never updated.
+    // `authorId` is the sealing human; `origin`/`agentRunId` attribute the
+    // CONTENT to the run when the draft was an agent proposal (§8.6).
     const versionRows = await tx
       .insert(artifactVersions)
       .values({
@@ -737,8 +840,8 @@ export async function approve(
         version: newVersionNumber,
         payload,
         authorId: actor.id,
-        origin: "human",
-        agentRunId: null,
+        origin: proposedByRunId ? "agent_run" : "human",
+        agentRunId: proposedByRunId,
       })
       .returning();
     const version = versionRows[0];
@@ -764,10 +867,26 @@ export async function approve(
         rejected: false,
         outdated: false, // re-approval supersedes any pending re-validation
         draftPayload: null, // the draft was promoted to the sealed version
+        proposedByRunId: null, // the proposal was decided; provenance is sealed
         updatedAt: new Date(),
       })
       .where(eq(artifacts.id, artifactId))
       .returning();
+
+    // Record the human decision on the run row (§9.6) — atomic with sealing.
+    // Deliberate: artifacts writes agent_runs via the shared src/db schema;
+    // the agents module never imports approve/reject (see CLAUDE.md).
+    if (proposedByRunId) {
+      await tx
+        .update(agentRuns)
+        .set({
+          status: "approved",
+          resultVersion: newVersionNumber,
+          decidedBy: actor.id,
+          decidedAt: new Date(),
+        })
+        .where(eq(agentRuns.id, proposedByRunId));
+    }
 
     // Derived tasks reflect real state (§12.2): review/re-validation done.
     await closeDerivedTask(tx, project.id, reviewTaskKey(artifactId));
@@ -811,6 +930,8 @@ export async function approve(
       detail: {
         type: artifact.type,
         version: newVersionNumber,
+        origin: proposedByRunId ? "agent_run" : "human",
+        agentRunId: proposedByRunId,
         comment: comment ?? null,
         outdatedDependentIds,
       },
@@ -827,6 +948,11 @@ export async function approve(
 /**
  * `in_review → draft` with the `rejected` flag and attached feedback (§8.2).
  * Feedback is persisted in the audit log entry.
+ *
+ * Provenance (§8.6): if the rejected draft was an agent run's proposal, the
+ * run row records the decision (status `rejected` + feedback + decidedBy) and
+ * the provenance pointer is cleared — the decision is final for that run;
+ * a new iteration is a new run.
  */
 export async function reject(
   artifactId: string,
@@ -844,12 +970,31 @@ export async function reject(
         `Solo se puede rechazar un artefacto en revisión («${definition.label}» está en estado ${artifact.status}).`,
       );
     }
+    const proposedByRunId = artifact.proposedByRunId;
 
     const updated = await tx
       .update(artifacts)
-      .set({ status: "draft", rejected: true, updatedAt: new Date() })
+      .set({
+        status: "draft",
+        rejected: true,
+        proposedByRunId: null, // decided: the run is settled below
+        updatedAt: new Date(),
+      })
       .where(eq(artifacts.id, artifactId))
       .returning();
+
+    // Record the human decision on the run row (§9.6) — atomic with the flag.
+    if (proposedByRunId) {
+      await tx
+        .update(agentRuns)
+        .set({
+          status: "rejected",
+          feedback,
+          decidedBy: actor.id,
+          decidedAt: new Date(),
+        })
+        .where(eq(agentRuns.id, proposedByRunId));
+    }
 
     // The review happened (decision: rejected) → the derived task closes.
     await closeDerivedTask(tx, project.id, reviewTaskKey(artifactId));
@@ -861,7 +1006,7 @@ export async function reject(
       action: "artifact.rejected",
       entityType: "artifact",
       entityId: artifactId,
-      detail: { type: artifact.type, feedback },
+      detail: { type: artifact.type, feedback, agentRunId: proposedByRunId },
     });
 
     return updated[0];

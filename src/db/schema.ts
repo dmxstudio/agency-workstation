@@ -108,6 +108,28 @@ export const deploymentStatusEnum = pgEnum("deployment_status", [
   "failed",
 ]);
 
+/**
+ * §7.9 / §8.6 — lifecycle of an agent run. `proposed` = the run produced a
+ * draft + validations + diff and WAITS for a human; `approved`/`rejected`
+ * record the HUMAN decision (taken through the artifacts module — no code
+ * path lets a run transition an artifact itself, §19).
+ */
+export const agentRunStatusEnum = pgEnum("agent_run_status", [
+  "queued",
+  "running",
+  "proposed",
+  "approved",
+  "rejected",
+  "failed",
+]);
+
+/** §16 BYOK — supported LLM providers. `mock` is first-class (demo/e2e offline). */
+export const llmProviderEnum = pgEnum("llm_provider", [
+  "anthropic",
+  "openai",
+  "mock",
+]);
+
 // ---------------------------------------------------------------------------
 // Platform core: users, sessions, workspaces, projects
 // ---------------------------------------------------------------------------
@@ -248,6 +270,16 @@ export const artifacts = pgTable(
     }),
     /** Mutable working copy (§8.3); promoted to an immutable version on approval. */
     draftPayload: jsonb("draft_payload"),
+    /**
+     * Provenance of the CURRENT draft (§8.6): the agent run that proposed it,
+     * or NULL when the draft is human-authored. When a human approves a draft
+     * proposed by a run, the sealed version carries `origin: "agent_run"` +
+     * `agentRunId` (§8.3) and this pointer is cleared.
+     */
+    proposedByRunId: text("proposed_by_run_id").references(
+      (): AnyPgColumn => agentRuns.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -346,26 +378,145 @@ export const artifactDependencies = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Agent runs (minimal placeholder — Agent Runtime is a later phase, §7.9)
+// BYOK: workspace LLM keys (§7.9, §16) + Agent runs (§7.9, §9.6)
 // ---------------------------------------------------------------------------
 
+/**
+ * Workspace-scoped LLM API keys (BYOK, §16). The key value is stored ONLY as
+ * AES-256-GCM ciphertext (`src/modules/agents/keys/crypto.ts`); it is never
+ * logged, never sent to the client (only id/label/last4) and never reaches
+ * generated projects. Agent runs reference keys by id (`keyRef`), never by value.
+ */
+export const workspaceLlmKeys = pgTable(
+  "workspace_llm_keys",
+  {
+    id: text("id").primaryKey(), // key_
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    provider: llmProviderEnum("provider").notNull(),
+    /** Human label, e.g. "Anthropic producción". */
+    label: text("label").notNull(),
+    /**
+     * AES-256-GCM ciphertext (`v1.<iv>.<tag>.<data>`, base64 parts). Only the
+     * agents runtime decrypts it; the keys service NEVER returns this field.
+     */
+    encryptedKey: text("encrypted_key").notNull(),
+    /** Last 4 characters of the plaintext key — the only visible fragment. */
+    last4: text("last4").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    /** Last successful validation against the provider; NULL after an auth failure. */
+    lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [index("workspace_llm_keys_workspace_id_idx").on(table.workspaceId)],
+);
+
+/**
+ * Agent runs (§7.9): full audit of what a skill read, what it proposed, which
+ * model/provider/key (by reference) it used, which validations ran and who
+ * decided (§9.6). A run NEVER approves artifacts — it produces a proposal
+ * (draft + validations + diff) and a human decides through the artifacts
+ * module (§8.6, §13, §19).
+ */
 export const agentRuns = pgTable(
   "agent_runs",
   {
     id: text("id").primaryKey(), // run_
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    /** Skill key (§9.3), e.g. "draft.strategy". */
+    /** Skill name (§9.3), e.g. "generate-spec-draft". */
     skill: text("skill").notNull(),
-    /** Free-form for now; the agents module will own the state machine. */
-    status: text("status").notNull().default("queued"),
+    /** Exact skill version the run executed (§9.1). */
+    skillVersion: text("skill_version").notNull(),
+    status: agentRunStatusEnum("status").notNull().default("queued"),
+    /** Artifact the proposal targets (its draft is the proposal). */
+    targetArtifactId: text("target_artifact_id").references(() => artifacts.id, {
+      onDelete: "set null",
+    }),
+    /** Denormalised target identity (survives artifact deletion). */
+    targetType: text("target_type").notNull(),
+    targetKey: text("target_key"),
+    /** Free-form user instruction (e.g. revise-artifact: "tono más premium"). */
+    instruction: text("instruction"),
+    /** Exactly which sealed versions the skill read (§9.6). */
+    inputArtifacts: jsonb("input_artifacts")
+      .$type<AgentRunInputArtifact[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    provider: llmProviderEnum("provider").notNull(),
+    /** Real model id used, e.g. "claude-sonnet-4-6" / "mock-deterministic-1". */
+    modelId: text("model_id"),
+    /** BYOK key used, BY REFERENCE — never the value (§16). NULL for mock. */
+    keyRef: text("key_ref").references(() => workspaceLlmKeys.id, {
+      onDelete: "set null",
+    }),
+    /** Skill validation results shown next to the proposal diff (§8.6). */
+    validations: jsonb("validations").$type<AgentRunValidation[]>(),
+    usage: jsonb("usage").$type<AgentRunUsage>(),
+    /** Human-readable failure detail (Spanish), prefixed with the error code. */
+    errorDetail: text("error_detail"),
+    /** Human (admin|member) who started the run. */
+    createdBy: text("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /** Human who decided on the proposal (approve/reject via artifacts). */
+    decidedBy: text("decided_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    /** Sealed artifact version that resulted from an approved proposal. */
+    resultVersion: integer("result_version"),
+    /** Human feedback attached when the proposal was rejected (§8.2/§8.6). */
+    feedback: text("feedback"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (table) => [index("agent_runs_project_id_idx").on(table.projectId)],
+  (table) => [
+    index("agent_runs_project_id_idx").on(table.projectId),
+    index("agent_runs_workspace_id_created_at_idx").on(
+      table.workspaceId,
+      table.createdAt,
+    ),
+    index("agent_runs_target_artifact_id_idx").on(table.targetArtifactId),
+  ],
 );
+
+/** One context read recorded on the run: `{type, key, version, source}` (§9.6). */
+export type AgentRunInputArtifact = {
+  type: string;
+  key: string | null;
+  /** Sealed version read; for `source:"draft"` the base version under the draft. */
+  version: number;
+  source: "approved" | "draft";
+};
+
+/** One skill validation result (§9.1 `validations`). */
+export type AgentRunValidation = {
+  key: string;
+  /** Human label (Spanish). */
+  label: string;
+  ok: boolean;
+  detail?: string;
+};
+
+/** Token usage + computed cost of the provider call. */
+export type AgentRunUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+};
 
 // ---------------------------------------------------------------------------
 // Audit log (§9.6, restricción "audit log en toda mutación")
@@ -641,6 +792,8 @@ export const sessionsRelations = relations(sessions, ({ one }) => ({
 export const workspacesRelations = relations(workspaces, ({ many }) => ({
   members: many(workspaceMembers),
   projects: many(projects),
+  llmKeys: many(workspaceLlmKeys),
+  agentRuns: many(agentRuns),
 }));
 
 export const workspaceMembersRelations = relations(
@@ -739,6 +892,13 @@ export const artifactsRelations = relations(artifacts, ({ one, many }) => ({
   approvals: many(approvals),
   dependsOn: many(artifactDependencies, { relationName: "dependsOn" }),
   dependents: many(artifactDependencies, { relationName: "dependents" }),
+  /** Agent run that proposed the CURRENT draft (§8.6); null if human-authored. */
+  proposedByRun: one(agentRuns, {
+    fields: [artifacts.proposedByRunId],
+    references: [agentRuns.id],
+    relationName: "agentRunProposedDrafts",
+  }),
+  targetedByRuns: many(agentRuns, { relationName: "agentRunTarget" }),
 }));
 
 export const artifactVersionsRelations = relations(
@@ -788,12 +948,51 @@ export const artifactDependenciesRelations = relations(
   }),
 );
 
+export const workspaceLlmKeysRelations = relations(
+  workspaceLlmKeys,
+  ({ one, many }) => ({
+    workspace: one(workspaces, {
+      fields: [workspaceLlmKeys.workspaceId],
+      references: [workspaces.id],
+    }),
+    creator: one(users, {
+      fields: [workspaceLlmKeys.createdBy],
+      references: [users.id],
+    }),
+    runs: many(agentRuns),
+  }),
+);
+
 export const agentRunsRelations = relations(agentRuns, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [agentRuns.workspaceId],
+    references: [workspaces.id],
+  }),
   project: one(projects, {
     fields: [agentRuns.projectId],
     references: [projects.id],
   }),
+  targetArtifact: one(artifacts, {
+    fields: [agentRuns.targetArtifactId],
+    references: [artifacts.id],
+    relationName: "agentRunTarget",
+  }),
+  key: one(workspaceLlmKeys, {
+    fields: [agentRuns.keyRef],
+    references: [workspaceLlmKeys.id],
+  }),
+  creator: one(users, {
+    fields: [agentRuns.createdBy],
+    references: [users.id],
+    relationName: "agentRunCreator",
+  }),
+  decider: one(users, {
+    fields: [agentRuns.decidedBy],
+    references: [users.id],
+    relationName: "agentRunDecider",
+  }),
   proposedVersions: many(artifactVersions),
+  proposedDrafts: many(artifacts, { relationName: "agentRunProposedDrafts" }),
 }));
 
 export const tasksRelations = relations(tasks, ({ one }) => ({
@@ -832,6 +1031,8 @@ export type ArtifactDependency = typeof artifactDependencies.$inferSelect;
 export type NewArtifactDependency = typeof artifactDependencies.$inferInsert;
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type NewAgentRun = typeof agentRuns.$inferInsert;
+export type WorkspaceLlmKey = typeof workspaceLlmKeys.$inferSelect;
+export type NewWorkspaceLlmKey = typeof workspaceLlmKeys.$inferInsert;
 export type AuditLogEntry = typeof auditLog.$inferSelect;
 export type NewAuditLogEntry = typeof auditLog.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
@@ -861,3 +1062,5 @@ export type ReviewCommentAuthorKind =
 export type ReviewCommentStatus = (typeof reviewCommentStatusEnum.enumValues)[number];
 export type DeploymentSlot = (typeof deploymentSlotEnum.enumValues)[number];
 export type DeploymentStatus = (typeof deploymentStatusEnum.enumValues)[number];
+export type AgentRunStatus = (typeof agentRunStatusEnum.enumValues)[number];
+export type LlmProviderKind = (typeof llmProviderEnum.enumValues)[number];

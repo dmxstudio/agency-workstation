@@ -34,6 +34,13 @@ import type { Artifact } from "@/db/schema";
  * the platform-core auth adapter — agent runs have no way in here, which is
  * what makes "an agent run can never approve" true by construction.
  *
+ * Provenance (§8.6): `saveProposalDraft` (agent run proposals) is
+ * DELIBERATELY not exposed here — it is not a human action. The human
+ * actions below decide over proposed drafts exactly like over human drafts:
+ * `approveArtifactAction` seals them with `origin: "agent_run"` + run id,
+ * `rejectArtifactAction` settles the run as rejected with feedback, and
+ * `saveDraftAction` (a human edit) clears the proposal provenance.
+ *
  * Cache revalidation (`revalidatePath`) is intentionally left to the calling
  * screens, which know their own routes.
  */

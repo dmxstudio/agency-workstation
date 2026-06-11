@@ -9,6 +9,7 @@ import {
   MessageSquareText,
   Palette,
   Rocket,
+  Sparkles,
 } from "lucide-react";
 
 import { PROJECT_PHASES, type ArtifactTypeKey } from "@/modules/artifacts";
@@ -172,6 +173,14 @@ export default async function ProjectLayout({
           >
             <FolderGit2 size={14} strokeWidth={1.75} aria-hidden />
             Generator
+          </NavLink>
+          <NavLink
+            href={`${basePath}/runs`}
+            className={navItemClass}
+            activeClassName={navItemActiveClass}
+          >
+            <Sparkles size={14} strokeWidth={1.75} aria-hidden />
+            Agent runs
           </NavLink>
 
           <SectionLabel>Spec OS</SectionLabel>

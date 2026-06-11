@@ -27,6 +27,8 @@ export {
   ensureProjectArtifacts,
   syncCompositionArtifacts,
   saveDraft,
+  saveProposalDraft,
+  saveDraftFromAgentRun,
   submitForReview,
   approve,
   reject,

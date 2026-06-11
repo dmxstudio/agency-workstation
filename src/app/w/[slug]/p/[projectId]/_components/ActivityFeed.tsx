@@ -14,6 +14,7 @@ import {
   RotateCcw,
   Send,
   Shapes,
+  Sparkles,
   XCircle,
 } from "lucide-react";
 
@@ -27,6 +28,8 @@ interface ActivityFeedProps {
   events: ActivityEvent[];
   /** Base del editor: `/w/[slug]/p/[projectId]/artifacts` (sin slash final). */
   artifactBaseHref: string;
+  /** Base del agent run log: `/w/[slug]/p/[projectId]/runs` (sin slash final). */
+  runsBaseHref: string;
 }
 
 // --- helpers de extracción segura sobre `detail: unknown` ---------------------
@@ -103,7 +106,38 @@ function versionNode(event: ActivityEvent): ReactNode {
   );
 }
 
-function buildView(event: ActivityEvent, artifactBaseHref: string): EventView {
+/** Link mono al detalle del run (`entityId` de los eventos `agent_run.*`). */
+function runLinkNode(event: ActivityEvent, runsBaseHref: string): ReactNode {
+  return (
+    <Link
+      href={`${runsBaseHref}/${event.entityId}`}
+      className="font-mono underline-offset-2 hover:underline"
+    >
+      {event.entityId}
+    </Link>
+  );
+}
+
+/** Target de un evento `agent_run.*` (detail.targetArtifactId/targetType). */
+function runTargetNode(event: ActivityEvent, artifactBaseHref: string): ReactNode {
+  const artifactId = asString(field(event.detail, "targetArtifactId"));
+  const label = typeLabel(asString(field(event.detail, "targetType"))) ?? "el artefacto objetivo";
+  if (!artifactId) return <span className="font-medium">{label}</span>;
+  return (
+    <Link
+      href={`${artifactBaseHref}/${artifactId}`}
+      className="font-medium underline-offset-2 hover:underline"
+    >
+      {label}
+    </Link>
+  );
+}
+
+function buildView(
+  event: ActivityEvent,
+  artifactBaseHref: string,
+  runsBaseHref: string,
+): EventView {
   const actor = actorNode(event);
   const artifact = artifactNode(event, artifactBaseHref);
   const version = versionNode(event);
@@ -253,6 +287,97 @@ function buildView(event: ActivityEvent, artifactBaseHref: string): EventView {
         variant: "default",
       };
     }
+    // --- agent runs (§7.9): SIEMPRE variante violeta + Sparkles (§11.4) -------
+    case "agent_run.queued": {
+      const skill = asString(field(event.detail, "skill"));
+      return {
+        icon: <Sparkles size={14} strokeWidth={2} aria-hidden />,
+        title: (
+          <>
+            {actor} lanzó la skill{" "}
+            <span className="font-mono text-xs">{skill ?? "?"}</span> sobre{" "}
+            {runTargetNode(event, artifactBaseHref)}
+          </>
+        ),
+        description: <>Run {runLinkNode(event, runsBaseHref)}</>,
+        variant: "agent",
+      };
+    }
+    case "agent_run.proposed": {
+      const skill = asString(field(event.detail, "skill"));
+      const modelId = asString(field(event.detail, "modelId"));
+      return {
+        icon: <Sparkles size={14} strokeWidth={2} aria-hidden />,
+        title: (
+          <>
+            La skill <span className="font-mono text-xs">{skill ?? "?"}</span> propuso un
+            borrador para {runTargetNode(event, artifactBaseHref)} — decisión humana pendiente
+          </>
+        ),
+        description: (
+          <>
+            {modelId ? <span className="font-mono">{modelId} · </span> : null}
+            Ver propuesta: {runLinkNode(event, runsBaseHref)}
+          </>
+        ),
+        variant: "agent",
+      };
+    }
+    case "agent_run.failed": {
+      const skill = asString(field(event.detail, "skill"));
+      const errorCode = asString(field(event.detail, "errorCode"));
+      return {
+        icon: <Sparkles size={14} strokeWidth={2} aria-hidden />,
+        title: (
+          <>
+            El run de <span className="font-mono text-xs">{skill ?? "?"}</span> falló
+            {errorCode ? (
+              <>
+                {" "}
+                <span className="font-mono text-xs text-accent-danger">{errorCode}</span>
+              </>
+            ) : null}
+          </>
+        ),
+        description: <>Detalle: {runLinkNode(event, runsBaseHref)}</>,
+        variant: "agent",
+      };
+    }
+    case "agent_run.approved": {
+      const skill = asString(field(event.detail, "skill"));
+      const resultVersion = asNumber(field(event.detail, "resultVersion"));
+      return {
+        icon: <Sparkles size={14} strokeWidth={2} aria-hidden />,
+        title: (
+          <>
+            {actor} aprobó la propuesta de{" "}
+            <span className="font-mono text-xs">{skill ?? "?"}</span>
+            {resultVersion != null ? (
+              <>
+                {" "}
+                <span className="font-mono text-xs tabular-nums">v{resultVersion}</span>
+              </>
+            ) : null}
+          </>
+        ),
+        description: <>Run {runLinkNode(event, runsBaseHref)}</>,
+        variant: "agent",
+      };
+    }
+    case "agent_run.rejected": {
+      const skill = asString(field(event.detail, "skill"));
+      return {
+        icon: <Sparkles size={14} strokeWidth={2} aria-hidden />,
+        title: (
+          <>
+            {actor} rechazó la propuesta de{" "}
+            <span className="font-mono text-xs">{skill ?? "?"}</span>
+          </>
+        ),
+        description: <>Run {runLinkNode(event, runsBaseHref)}</>,
+        variant: "agent",
+      };
+    }
     default:
       return {
         icon: <History size={14} strokeWidth={2} aria-hidden />,
@@ -271,12 +396,21 @@ function buildView(event: ActivityEvent, artifactBaseHref: string): EventView {
  * auditadas, con timestamps relativos en español. La actividad de agentes
  * (origin `agent_run`) usa la variante violeta reservada (§11.4).
  */
-export function ActivityFeed({ events, artifactBaseHref }: ActivityFeedProps) {
-  // approve() audita además con action "artifact.approved" (entityType
-  // "artifact"); el feed ya sirve la aprobación como evento de primera clase
-  // desde la tabla approvals — se omite el duplicado de audit aquí.
+export function ActivityFeed({ events, artifactBaseHref, runsBaseHref }: ActivityFeedProps) {
+  // Audits omitidos por duplicar eventos que el feed ya sirve:
+  // - "artifact.approved": la aprobación llega como evento de primera clase
+  //   desde la tabla approvals.
+  // - "agent_run.started": llega segundos después de "agent_run.queued" sin
+  //   información nueva (ruido).
+  // - "artifact.draft_proposed": el runner emite "agent_run.proposed" en el
+  //   mismo instante, con link al run y al artefacto target.
+  const HIDDEN_AUDIT_ACTIONS = new Set([
+    "artifact.approved",
+    "agent_run.started",
+    "artifact.draft_proposed",
+  ]);
   const visible = events.filter(
-    (event) => !(event.kind === "audit" && event.action === "artifact.approved"),
+    (event) => !(event.kind === "audit" && HIDDEN_AUDIT_ACTIONS.has(event.action)),
   );
 
   if (visible.length === 0) {
@@ -295,7 +429,7 @@ export function ActivityFeed({ events, artifactBaseHref }: ActivityFeedProps) {
   return (
     <div className="flex flex-col divide-y divide-border">
       {visible.map((event) => {
-        const view = buildView(event, artifactBaseHref);
+        const view = buildView(event, artifactBaseHref, runsBaseHref);
         return (
           <ActivityItem
             key={`${event.kind}:${event.id}`}

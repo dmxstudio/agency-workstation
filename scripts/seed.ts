@@ -46,6 +46,19 @@
  *     (`npx tsx scripts/e2e-deploy-review.ts` or the Deploy screen).
  * The review link is printed at the very end of the seed.
  *
+ * STEP 6 (agents, §7.9/§9) — `ensureAgentDemo` also runs on every execution:
+ *   - the workspace gets a `mock` BYOK key («Proveedor de demostración»),
+ *     created through the real `addKey` path (validated, AES-256-GCM at rest,
+ *     audited; the mock provider never actually consumes a key),
+ *   - ONE agent run settled in `proposed` over the «nosotros» composition
+ *     (revise-artifact, instruction «Haz el tono más cercano y menciona el
+ *     servicio 24h», via the REAL runner with the deterministic mock
+ *     provider): draft + validaciones + diff waiting for the HUMAN decision
+ *     (§8.6/§13 — the seed never decides it). Created only when the project
+ *     has no runs yet; once decided, re-seeding never re-opens the moment.
+ *   With the pending proposal, the LIVE release checklist shows «nosotros»
+ *   sin aprobar — expected: release v1 froze a green checklist when sealed.
+ *
  * The three artifacts the Generator REQUIRES (§7.3: spec.sitemap,
  * cms.collections, design.tokens) end up approved, so the demo project is
  * generable right after seeding (see scripts/e2e-generator.ts).
@@ -77,7 +90,18 @@ import { and, eq, isNull } from "drizzle-orm";
 
 import { getDb, type Db } from "../src/db/client";
 import { newId } from "../src/db/ids";
-import { artifactVersions, projects, tasks, users, workspaces } from "../src/db/schema";
+import {
+  agentRuns,
+  artifactVersions,
+  projects,
+  tasks,
+  users,
+  workspaceLlmKeys,
+  workspaces,
+} from "../src/db/schema";
+import { addKey } from "../src/modules/agents/keys/service";
+import { startRun, waitForRunSettled } from "../src/modules/agents/runtime/runner";
+import { bindSkillForRun, getSkill } from "../src/modules/agents/skills";
 import {
   approve,
   getProjectArtifacts,
@@ -854,8 +878,15 @@ function generationIsCurrent(summary: GenerationSummary, items: ProjectArtifact[
   ] as const) {
     if ((summary.inputVersions[type] ?? 0) !== singletonVersion(type)) return false;
   }
+  // A page with a PENDING proposal/draft over a sealed version (§8.6 — e.g.
+  // the demo agent run on «nosotros») still counts by its sealed version: the
+  // sealed payload is the page's truth until a human decides, and regenerating
+  // here would destructively drop the page from the repo.
   const sealedCompositions = items.filter(
-    (i) => i.artifact.type === "page.composition" && i.artifact.key != null && isSealed(i),
+    (i) =>
+      i.artifact.type === "page.composition" &&
+      i.artifact.key != null &&
+      i.artifact.currentVersion > 0,
   );
   const consumed = summary.compositionVersions ?? {};
   if (Object.keys(consumed).length !== sealedCompositions.length) return false;
@@ -952,10 +983,12 @@ async function ensureReleaseAndReviewRound(
     if (!item) {
       throw new Error(`Paso 5: falta el artefacto page.composition de «${page.pagePath}».`);
     }
-    const alreadySealed =
-      (item.artifact.status === "approved" || item.artifact.status === "locked") &&
-      item.artifact.currentVersion > 0;
-    if (alreadySealed) continue;
+    // A page that already has a sealed version is left alone EVEN IF a newer
+    // draft is pending (e.g. the paso-6 agent proposal on «nosotros»): the
+    // seed must never decide a proposal — that moment belongs to the user
+    // (§8.6/§13). Only never-sealed pages are walked through the cycle here.
+    const hasSealedVersion = item.artifact.currentVersion > 0;
+    if (hasSealedVersion) continue;
     let status = item.artifact.status;
     if (status === "empty") {
       await saveDraft(item.artifact.id, await scaffoldFor(page.slug), actor);
@@ -1023,24 +1056,32 @@ async function ensureReleaseAndReviewRound(
     );
   }
 
-  // --- (c) release checklist §7.8 must be green ------------------------------
+  // --- (c) release checklist §7.8 — enforced before sealing v1 ---------------
+  const releaseItem = singleton("release");
+  if (!releaseItem) {
+    throw new Error("Paso 5: el proyecto no tiene artefacto release.");
+  }
+  let releaseVersion = releaseItem.artifact.currentVersion;
   const checklist = await runReleaseChecklist(projectId);
   for (const item of checklist) {
     console.log(`  ${item.ok ? "✓" : "✗"} ${item.label}${item.detail ? ` — ${item.detail}` : ""}`);
   }
   const failing = checklist.filter((item) => !item.ok);
   if (failing.length > 0) {
-    throw new Error(
-      `El checklist de release no quedó en verde: ${failing.map((item) => item.key).join(", ")}.`,
+    if (releaseVersion === 0) {
+      throw new Error(
+        `El checklist de release no quedó en verde: ${failing.map((item) => item.key).join(", ")}.`,
+      );
+    }
+    // Release v1 already sealed (its payload froze a green checklist): the
+    // LIVE checklist may legitimately be red now — e.g. the paso-6 agent
+    // proposal pending on «nosotros». The seed reports it and moves on.
+    console.log(
+      "  (release v1 ya sellado; el checklist refleja el estado VIVO — p.ej. una propuesta de agente pendiente — y no bloquea el seed)",
     );
   }
 
   // --- (d) release v1: sealed for real via createRelease ---------------------
-  const releaseItem = singleton("release");
-  if (!releaseItem) {
-    throw new Error("Paso 5: el proyecto no tiene artefacto release.");
-  }
-  let releaseVersion = releaseItem.artifact.currentVersion;
   if (releaseVersion === 0) {
     const created = await createRelease(
       projectId,
@@ -1145,6 +1186,130 @@ async function ensureReleaseAndReviewRound(
   return request.token;
 }
 
+// ---------------------------------------------------------------------------
+// Step 6 — agents (§7.9, §9): mock BYOK key + ONE pending proposal (§8.6)
+// ---------------------------------------------------------------------------
+
+const DEMO_LLM_KEY_LABEL = "Proveedor de demostración";
+const DEMO_AGENT_INSTRUCTION = "Haz el tono más cercano y menciona el servicio 24h";
+
+/**
+ * Leaves the paso-6 demo state, idempotently:
+ * - the workspace has a `mock` BYOK key («Proveedor de demostración») — the
+ *   mock provider needs no key to run, but the row makes BYOK visible in the
+ *   demo data and exercises the real `addKey` path (validation + encryption
+ *   at rest + audit);
+ * - ONE agent run settled in `proposed` over the «nosotros» composition
+ *   (revise-artifact via the REAL runner with the mock provider), so the user
+ *   opens the demo and LIVES the human decision (§8.6/§13): approve, edit or
+ *   reject from /runs/<runId>, the Studio or the assistant.
+ *
+ * Idempotency cutoff: the run is only created when the project has NO agent
+ * runs yet. Once the user (or an e2e drill) decides it, re-seeding never
+ * re-opens the moment — a pristine demo is `rm -rf .data && migrate && seed`.
+ */
+async function ensureAgentDemo(
+  db: Db,
+  workspaceId: string,
+  projectId: string,
+  userId: string,
+): Promise<{ runId: string; created: boolean } | null> {
+  const actor: HumanActor = { id: userId, role: "admin", workspaceId };
+  console.log("\n— Paso 6: agentes — key mock + propuesta pendiente (idempotente) —");
+
+  // --- (a) mock BYOK key, idempotent by (workspace, provider, label) --------
+  const existingKey = await db
+    .select({ id: workspaceLlmKeys.id })
+    .from(workspaceLlmKeys)
+    .where(
+      and(
+        eq(workspaceLlmKeys.workspaceId, workspaceId),
+        eq(workspaceLlmKeys.provider, "mock"),
+        eq(workspaceLlmKeys.label, DEMO_LLM_KEY_LABEL),
+        isNull(workspaceLlmKeys.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (existingKey[0]) {
+    console.log(`llm_key: «${DEMO_LLM_KEY_LABEL}» (mock) ya existe; no se recrea.`);
+  } else {
+    const key = await addKey(
+      {
+        workspaceId,
+        provider: "mock",
+        label: DEMO_LLM_KEY_LABEL,
+        // Demo value: the mock provider never consumes it, but it goes through
+        // the real path (validated, AES-256-GCM at rest, audited, last4 only).
+        apiKey: "mock-demo-2026",
+      },
+      actor,
+    );
+    console.log(`llm_key: «${DEMO_LLM_KEY_LABEL}» (mock) añadida (····${key.last4}).`);
+  }
+
+  // --- (b) ONE run in `proposed` over «nosotros» (only if no runs exist) ----
+  const existingRun = await db
+    .select({ id: agentRuns.id, status: agentRuns.status })
+    .from(agentRuns)
+    .where(eq(agentRuns.projectId, projectId))
+    .limit(1);
+  if (existingRun[0]) {
+    console.log(
+      "agent run: el proyecto ya tiene runs; no se crea otra propuesta (demo impoluta: borra ./.data y re-siembra).",
+    );
+    return null;
+  }
+
+  const items = await getProjectArtifacts(projectId);
+  const nosotros = items.find(
+    (item) => item.artifact.type === "page.composition" && item.artifact.key === "nosotros",
+  );
+  if (
+    !nosotros ||
+    nosotros.artifact.currentVersion === 0 ||
+    nosotros.artifact.status === "locked" ||
+    nosotros.artifact.status === "in_review"
+  ) {
+    console.warn(
+      "AVISO: no existe una composición «nosotros» aprobada y decidible; se omite el agent run demo.",
+    );
+    return null;
+  }
+
+  // The REAL production path: bind (Zod over params) → startRun (queued row +
+  // async execution) → settled. Deterministic mock provider: no network, $0.
+  const bound = bindSkillForRun(getSkill("revise-artifact"), {
+    instruction: DEMO_AGENT_INSTRUCTION,
+    targetType: "page.composition",
+    targetKey: "nosotros",
+  });
+  const run = await startRun(
+    {
+      projectId,
+      skill: bound.definition,
+      provider: "mock",
+      targetType: bound.target.type,
+      targetKey: bound.target.key,
+      instruction: bound.instruction,
+    },
+    actor,
+  );
+  const settled = await waitForRunSettled(run.id);
+  if (settled.status !== "proposed") {
+    throw new Error(
+      `El agent run demo no quedó en proposed (estado «${settled.status}»: ${settled.errorDetail ?? "sin detalle"}).`,
+    );
+  }
+  console.log(
+    `agent run: revise-artifact@${settled.skillVersion} (mock) → PROPUESTA pendiente sobre «nosotros» (${run.id}).`,
+  );
+  console.log(`  instrucción: «${DEMO_AGENT_INSTRUCTION}»`);
+  console.log(
+    "  El run NO aprueba nada (§19): deja un draft + validaciones + diff esperando tu decisión.",
+  );
+  return { runId: run.id, created: true };
+}
+
 /** True when the generated repo's template statics carry the section anchors. */
 function readPuckAnchorsPresent(repoDir: string): boolean {
   const primitives = path.join(repoDir, "src", "puck", "primitives.tsx");
@@ -1163,6 +1328,20 @@ function printCredentials(): void {
   console.log(`  Email:      ${DEMO_EMAIL}`);
   console.log(`  Contraseña: ${DEMO_PASSWORD}`);
   console.log(`  Workspace:  ${DEMO_WORKSPACE_NAME} (/w/${DEMO_WORKSPACE_SLUG})`);
+  console.log("────────────────────────────────────────────");
+}
+
+/** The pending agent proposal: where the user lives the human decision (§13). */
+function printAgentRunLink(
+  projectId: string,
+  agentDemo: { runId: string; created: boolean } | null,
+): void {
+  if (!agentDemo) return;
+  console.log("\n────────────────────────────────────────────");
+  console.log("Agent run demo (propuesta PENDIENTE de decisión humana)");
+  console.log(`  Run:   http://localhost:3000/w/${DEMO_WORKSPACE_SLUG}/p/${projectId}/runs/${agentDemo.runId}`);
+  console.log("  skill: revise-artifact (mock, $0) sobre la composición «nosotros»");
+  console.log("  Aprueba, edita-y-aprueba o rechaza: la decisión es tuya (§8.6, §19).");
   console.log("────────────────────────────────────────────");
 }
 
@@ -1237,15 +1416,17 @@ async function main(): Promise<void> {
     console.log(
       `Proyecto "${DEMO_PROJECT_NAME}" ya existe (${existingProject[0].id}); historia base omitida.`,
     );
-    // The step-5 state is still ensured (idempotent: no-ops when present).
+    // The step-5/6 state is still ensured (idempotent: no-ops when present).
     const token = await ensureReleaseAndReviewRound(
       db,
       workspaceId,
       existingProject[0].id,
       userId,
     );
+    const agentDemo = await ensureAgentDemo(db, workspaceId, existingProject[0].id, userId);
     printCredentials();
     printReviewLink(token);
+    printAgentRunLink(existingProject[0].id, agentDemo);
     return;
   }
 
@@ -1418,6 +1599,9 @@ async function main(): Promise<void> {
   // --- Paso 5: composiciones restantes + release v1 + ronda de review -------
   const token = await ensureReleaseAndReviewRound(db, workspaceId, project.id, userId);
 
+  // --- Paso 6: agentes — key mock BYOK + UNA propuesta pendiente (§8.6) -----
+  const agentDemo = await ensureAgentDemo(db, workspaceId, project.id, userId);
+
   console.log("\nSeed completado:");
   console.log("  - spec.intake       approved v2 (2 versiones inmutables)");
   console.log("  - spec.strategy     approved v2 (marcada outdated por intake v2 y re-validada)");
@@ -1433,10 +1617,19 @@ async function main(): Promise<void> {
     `  - review            ronda abierta «${DEMO_REVIEW_LABEL}»: 1 comentario abierto (con tarea derivada en el Cockpit) + 1 resuelto; SIN aprobación de cliente`,
   );
   console.log("  - 1 tarea manual abierta");
+  console.log(
+    `  - llm_key mock      «${DEMO_LLM_KEY_LABEL}» (BYOK §16; cifrada en reposo, solo last4 visible)`,
+  );
+  if (agentDemo) {
+    console.log(
+      "  - agent run         revise-artifact (mock) en estado PROPOSED sobre «nosotros» — draft + diff + validaciones esperando TU decisión (§8.6)",
+    );
+  }
   console.log("\nSiguiente paso (deploy real, lo hace el usuario o el e2e):");
   console.log("  npx tsx scripts/e2e-deploy-review.ts   (o la pantalla Deploy del proyecto)");
   printCredentials();
   printReviewLink(token);
+  printAgentRunLink(project.id, agentDemo);
 }
 
 main()

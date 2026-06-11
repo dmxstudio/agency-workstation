@@ -25,6 +25,7 @@ export const ID_PREFIXES = {
   reviewComment: "cmt",
   clientApproval: "capr",
   deployment: "dep",
+  llmKey: "key",
 } as const;
 
 export type IdEntity = keyof typeof ID_PREFIXES;
@@ -65,4 +66,5 @@ export const newId = {
   reviewComment: () => generateId(ID_PREFIXES.reviewComment),
   clientApproval: () => generateId(ID_PREFIXES.clientApproval),
   deployment: () => generateId(ID_PREFIXES.deployment),
+  llmKey: () => generateId(ID_PREFIXES.llmKey),
 } satisfies Record<IdEntity, () => string>;

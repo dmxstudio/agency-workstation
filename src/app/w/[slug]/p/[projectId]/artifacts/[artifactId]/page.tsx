@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, TriangleAlert } from "lucide-react";
 
+import { AssistantLauncher } from "@/modules/agents/assistant";
 import { getPhaseLabel, isArtifactDomainError } from "@/modules/artifacts";
 import {
   computeDiff,
@@ -127,6 +128,15 @@ export default async function ArtifactPage({
         eyebrow={`Spec OS · ${artifact.type}`}
         title={definition?.label ?? artifact.type}
         description={definition?.description}
+        actions={
+          <AssistantLauncher
+            surface="spec-os"
+            slug={slug}
+            projectId={projectId}
+            artifactType={artifact.type}
+            artifactKey={artifact.key ?? undefined}
+          />
+        }
         meta={
           <>
             <StatusPill

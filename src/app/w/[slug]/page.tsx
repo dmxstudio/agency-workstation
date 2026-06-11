@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { FolderOpen, LogOut } from "lucide-react";
+import { FolderOpen, LogOut, Settings } from "lucide-react";
 
 import { PROJECT_PHASES } from "@/modules/artifacts";
 import { getProjectArtifacts } from "@/modules/artifacts/service";
@@ -112,6 +112,15 @@ export default async function WorkspaceHomePage({
         </div>
         <div className="flex items-center gap-3">
           <span className="hidden text-xs text-muted sm:inline">{user.name}</span>
+          {role !== "client" ? (
+            <Link
+              href={`/w/${slug}/settings`}
+              className="inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium text-muted transition-colors hover:bg-surface-raised hover:text-foreground"
+            >
+              <Settings size={13} strokeWidth={1.75} aria-hidden />
+              Ajustes
+            </Link>
+          ) : null}
           <ThemeToggle />
           <form action={signOutAction}>
             <Button type="submit" variant="ghost" size="sm" title="Cerrar sesión">

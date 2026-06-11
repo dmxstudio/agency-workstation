@@ -3,9 +3,10 @@
  *
  * Prerequisites: `npm run db:migrate && npm run db:seed` (the seed leaves the
  * demo project "Sitio Corporativo Acme" with the three required artifacts
- * approved + the per-page `page.composition` artifacts synced from the
- * sitemap: `inicio` and `servicios` approved as Puck Data, `nosotros` with an
- * unapproved draft). Run with: `npx tsx scripts/e2e-generator.ts`.
+ * approved and EVERY sitemap composition sealed via step 5; step 6 may leave
+ * a pending agent PROPOSAL on «nosotros» — that page then sits in `draft`
+ * and falls back to the scaffold: drafts never reach the repo).
+ * Run with: `npx tsx scripts/e2e-generator.ts`.
  *
  * NOTE: demo databases seeded BEFORE the multi-composition model (legacy
  * keyless `page.composition`) must be recreated: delete `./.data/pglite` and
@@ -185,22 +186,42 @@ async function main(): Promise<void> {
       ),
     "la página «servicios» del seed proviene del artefacto page.composition[servicios] (Data de Puck con $seedRef)",
   );
-  // «nosotros» tiene un BORRADOR sin aprobar: el generator solo consume
-  // versiones selladas, así que la página cae al scaffold (sin copy aprobado
-  // para nosotros → HeroMinimal) y el borrador no se filtra al repo.
-  const fallbackSeedPage = seedJson.pages.find((page) => page.path === "nosotros");
-  assert(
-    fallbackSeedPage != null &&
-      fallbackSeedPage.content.some((block) => block.type === "HeroMinimal") &&
-      !fallbackSeedPage.content.some((block) => block.props.id === "ImageText-nosotros-planta"),
-    "las páginas sin composición aprobada usan el scaffold (el borrador de «nosotros» NO se consume)",
+  // El generator consume SOLO versiones selladas de composiciones APROBADAS
+  // (§7.3). Desde el paso 5 el seed deja todas las composiciones del sitemap
+  // aprobadas, y el paso 6 puede dejar una PROPUESTA de agente pendiente
+  // (§8.6, p.ej. sobre «nosotros»): esa página queda con estado draft y cae
+  // al scaffold — ningún borrador se filtra jamás al repo.
+  const compositionItems = (await getProjectArtifacts(projectId)).filter(
+    (item) => item.artifact.type === "page.composition" && item.artifact.key != null,
   );
-  assert(
-    gen.summary.compositionVersions?.inicio === 1 &&
-      gen.summary.compositionVersions?.servicios != null &&
-      Object.keys(gen.summary.compositionVersions ?? {}).length === 2,
-    "el resumen registra las composiciones selladas consumidas (inicio + servicios)",
+  const approvedCompositions = compositionItems.filter(
+    (item) =>
+      (item.artifact.status === "approved" || item.artifact.status === "locked") &&
+      item.artifact.currentVersion > 0,
   );
+  const consumed = gen.summary.compositionVersions ?? {};
+  assert(
+    Object.keys(consumed).length === approvedCompositions.length &&
+      approvedCompositions.every(
+        (item) => consumed[item.artifact.key as string] === item.artifact.currentVersion,
+      ),
+    `el resumen registra las composiciones APROBADAS consumidas a su versión sellada (${Object.keys(
+      consumed,
+    )
+      .sort()
+      .join(", ")})`,
+  );
+  const pendingDraftItems = compositionItems.filter(
+    (item) => item.artifact.draftPayload != null && !(item.artifact.key! in consumed),
+  );
+  for (const item of pendingDraftItems) {
+    const seedPage = seedJson.pages.find((page) => page.path === item.artifact.key);
+    const draftContent = (item.artifact.draftPayload as { content?: unknown }).content;
+    assert(
+      seedPage != null && JSON.stringify(seedPage.content) !== JSON.stringify(draftContent),
+      `el borrador pendiente de «${item.artifact.key}» NO se consume (la página cae al scaffold; solo versiones selladas llegan al repo)`,
+    );
+  }
   const log1 = await gitLog(repoDir);
   assert(log1.length === 1 && log1[0].includes("generate: initial project"), "git log: commit inicial descriptivo");
 

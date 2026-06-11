@@ -7,6 +7,7 @@ export type ArtifactErrorCode =
   | "PROJECT_NOT_FOUND"
   | "ARTIFACT_NOT_FOUND"
   | "VERSION_NOT_FOUND"
+  | "AGENT_RUN_NOT_FOUND"
   | "UNKNOWN_TYPE"
   | "VALIDATION_FAILED"
   | "INVALID_STATE"

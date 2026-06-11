@@ -11,6 +11,11 @@
  * running this script (it opens the same embedded DB).
  *
  * What it does, in order (the same service calls the UI buttons make):
+ *  0. If any composition has a pending draft — e.g. the seed's paso-6 agent
+ *     proposal on «nosotros» (§8.6) — a HUMAN decision approves it (sealing
+ *     origin agent_run + run id) and the repo is regenerated. NOTE: this
+ *     consumes the demo's "decide the proposal" moment; re-seed from scratch
+ *     (`rm -rf .data`) to get it back.
  *  1. Checklist §7.8 all green (otherwise: re-run the seed).
  *  2. createRelease → seals the NEXT immutable release version (v2 on the
  *     first run after seeding; each run adds one — append-only by design)
@@ -61,10 +66,14 @@ import {
   workspaces,
 } from "../src/db/schema";
 import {
+  approve,
   getProjectArtifacts,
+  submitForReview,
   type HumanActor,
   type ProjectArtifact,
 } from "../src/modules/artifacts/service";
+import { formatConflict } from "../src/modules/generator/conflicts";
+import { regenerateProject } from "../src/modules/generator/service";
 import { pageCompositionPayloadSchema } from "../src/modules/artifacts/types/page-composition";
 import {
   flattenSitemap,
@@ -209,6 +218,53 @@ async function main(): Promise<void> {
   await provider.stop(projectId, "production");
 
   try {
+    // -------------------------------------------------------------------------
+    // 0. Pending drafts on compositions get the HUMAN decision (§13) before
+    //    the checklist: the seed's paso 6 leaves ONE agent proposal on
+    //    «nosotros» (revise-artifact, §8.6) precisely so a human decides it.
+    //    This drill IS that human: it approves (sealing the version with
+    //    origin agent_run + run id when the draft is a run's proposal) and
+    //    regenerates so the repo incorporates the new sealed versions.
+    const pendingCompositions = (await getProjectArtifacts(projectId)).filter(
+      (item) =>
+        item.artifact.type === "page.composition" &&
+        item.artifact.key != null &&
+        item.artifact.draftPayload != null &&
+        (item.artifact.status === "draft" || item.artifact.status === "in_review"),
+    );
+    if (pendingCompositions.length > 0) {
+      console.log("# 0. Decisión humana sobre borradores/propuestas pendientes (§8.6/§13)");
+      for (const item of pendingCompositions) {
+        const wasProposal = item.artifact.proposedByRunId;
+        if (item.artifact.status === "draft") {
+          await submitForReview(item.artifact.id, actor);
+        }
+        const sealed = await approve(
+          item.artifact.id,
+          actor,
+          "Aprobada en el drill e2e deploy-review (decisión humana sobre la propuesta pendiente).",
+        );
+        console.log(
+          `  «${item.artifact.key}» aprobada como v${sealed.version.version}` +
+            (wasProposal
+              ? ` (propuesta del run ${wasProposal} → origin ${sealed.version.origin})`
+              : ""),
+        );
+      }
+      const regen = await timed("regenerateProject", () => regenerateProject(projectId, actor));
+      if (regen.summary.conflicts.length > 0) {
+        throw new Error(
+          `La regeneración reportó conflictos (§18.2):\n${regen.summary.conflicts
+            .map((conflict) => `  - ${formatConflict(conflict)}`)
+            .join("\n")}`,
+        );
+      }
+      console.log(
+        `  repo regenerado: ${regen.summary.written.length} reescritos` +
+          (regen.summary.commit ? ` (commit ${regen.summary.commit.slice(0, 10)})` : " (sin cambios)"),
+      );
+    }
+
     // -------------------------------------------------------------------------
     console.log("# 1. Checklist de release §7.8 en verde");
     const checklist = await runReleaseChecklist(projectId);

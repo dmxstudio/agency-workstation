@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { Shapes } from "lucide-react";
 
+import { AssistantLauncher } from "@/modules/agents/assistant";
 import { PROJECT_PHASES, getPhaseLabel, type ProjectPhaseKey } from "@/modules/artifacts";
 import { getPhaseGates } from "@/modules/artifacts/service";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
@@ -113,6 +114,7 @@ export default async function ProjectCockpitPage({
       <PageHeader
         eyebrow={membership.workspace.name}
         title={project.name}
+        actions={<AssistantLauncher surface="cockpit" slug={slug} projectId={project.id} />}
         meta={
           <>
             <Badge tone={project.status === "archived" ? "warning" : "neutral"}>
@@ -200,7 +202,11 @@ export default async function ProjectCockpitPage({
                   </span>
                 </CardHeader>
                 <CardContent className="px-4 py-1">
-                  <ActivityFeed events={activity} artifactBaseHref={artifactBaseHref} />
+                  <ActivityFeed
+                    events={activity}
+                    artifactBaseHref={artifactBaseHref}
+                    runsBaseHref={`${path}/runs`}
+                  />
                 </CardContent>
               </Card>
             </div>

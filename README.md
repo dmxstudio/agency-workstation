@@ -29,6 +29,8 @@ El seed crea el proyecto **"Sitio Corporativo Acme"** con el grafo de 8 artefact
 
 Además el seed deja el **paso 5 listo para vivirlo**: genera/regenera el repo del proyecto, valida el checklist de release §7.8 en verde, **sella el release v1** (versión inmutable del artefacto `release` + tag git `release-1`) y abre una **ronda de review de cliente** («Cliente Acme — ronda 1») con dos comentarios demo — uno abierto (su tarea derivada §12.2 aparece en el Cockpit) y uno resuelto — y **sin aprobación de cliente** (ese momento queda para ti en `/review/<token>`; el seed imprime el link al final). El seed **nunca despliega** (los builds tardan minutos): hazlo desde la pantalla Deploy o con `npx tsx scripts/e2e-deploy-review.ts`.
 
+Y el **paso 6 también queda listo para vivirlo**: el workspace recibe una key `mock` BYOK («Proveedor de demostración») y el runner real deja **un agent run en estado `proposed`** sobre la composición de «Nosotros» (`revise-artifact`, instrucción «Haz el tono más cercano y menciona el servicio 24h», proveedor mock determinista, $0). La propuesta es un draft + validaciones + diff **esperando tu decisión humana** — apruébala, edítala o recházala desde la pantalla del run (el seed imprime el link al final), el Studio o el asistente. El run se crea solo si el proyecto aún no tiene runs; una vez decidido, el momento no se re-abre re-sembrando (demo impoluta: borra `./.data` y re-siembra). Con la propuesta pendiente, el checklist VIVO de release marca «nosotros» sin aprobar — es lo esperado: el release v1 congeló su checklist en verde al sellarse.
+
 Los **tres artefactos que requiere el Generator** (`spec.sitemap`, `cms.collections`, `design.tokens`) quedan aprobados: el proyecto demo es generable nada más sembrar (ver la sección Generator).
 
 > PGlite es de **un solo proceso**: para ejecutar el seed o cualquier script `tsx` que toque la DB, para antes el dev server (`npm run dev`) y relánzalo después.
@@ -47,12 +49,13 @@ Hecho:
 - **Generator** (`src/modules/generator` + pantalla `/w/<slug>/p/<id>/generator`) — generación y regeneración parcial de proyectos reales desde los artefactos aprobados (ver sección Generator).
 - **Visual Studio + CMS** (`src/modules/studio` + pantallas `/studio`, `/studio/<página>` y `/cms`) — editor Puck embebido con el ciclo de aprobación §13 y vistas del modelo de contenido (ver sección Studio y CMS).
 - **Review + Deploy & Release** (`src/modules/review`, `src/modules/deploy` + pantallas `/review`, `/deploy` y la superficie pública `/review/<token>`) — checklist de release §7.8, releases inmutables, deploy local por slots con rollback y review de cliente por link con token (ver sección Review y Deploy).
+- **Agent Runtime** (`src/modules/agents` + asistente contextual, pantalla `/runs` y settings BYOK) — las 5 skills §9.3 con contrato operativo, runner async in-process, BYOK cifrado por workspace, proveedor mock de primera clase y el ciclo propose→diff→approve con provenance `agent_run` (ver sección Agentes).
 
 Pendiente (fases posteriores de la spec):
 
-- **Agent Runtime** (`agent_runs` es solo un placeholder en el schema; no hay flujo propose→diff→approve de agentes).
 - **Cierre de gates de fase** (el stepper marca "cerrable" pero no existe la acción de cierre con lock masivo + avance de `currentPhase`).
 - **Clerk** como proveedor de auth (llegará detrás del mismo adapter, §18.6).
+- **Vercel** como DeployProvider real (llegará detrás de la misma interfaz `provider.ts`).
 
 ## Generator (§7.3, §18.2)
 
@@ -120,6 +123,22 @@ El estado de los slots se comprueba contra la REALIDAD (pid vivo + identidad del
 
 > Nota honesta sobre el template: la regeneración solo reescribe archivos owned-by-codegen; los archivos **estáticos copiados del template** (p.ej. `src/puck/*`) son territorio humano tras la copia inicial y NO se re-copian (§18.2). Un cambio de template llega a los repos ya generados re-creándolos (`scripts/e2e-studio.ts` lo hace con el repo demo) o portándolo con un commit humano dentro del repo generado; no existe aún una historia de producto de «upgrade de template».
 
+## Agentes: BYOK, asistente y agent runs (§7.9, §9)
+
+El paso 6 cierra el MVP: **un asistente contextual único** (§9.2 — sin "agentes persona") que invoca las **5 skills de la lista cerrada §9.3** (`generate-spec-draft`, `generate-cms-schema`, `write-page-copy`, `compose-page-draft`, `revise-artifact`) sobre el Project Context API (§9.4: solo versiones aprobadas + el draft del propio target).
+
+**La garantía §19, por construcción:** un agent run produce una **PROPUESTA** — el draft del artefacto objetivo (con puntero de provenance `proposedByRunId`) + validaciones + diff estructural — y se queda en `proposed` esperando. Ningún camino de código del módulo `agents` puede transicionar un artefacto a `approved` (hay un assert estático en los smokes que lo impone). La decisión es siempre de un humano con rol, vía las mismas server actions de artifacts de todo el producto: al **aprobar**, la versión sellada lleva `origin: "agent_run"` + el id del run (§8.3) y el run queda `approved` + `resultVersion` + `decidedBy`; al **rechazar**, el run guarda el feedback y el draft sigue editable. El usuario puede ignorar a la IA por completo y el flujo funciona igual (§13).
+
+**BYOK (§16):** cada workspace configura sus propias API keys en `/w/<slug>/settings` (solo admins). Las keys se **validan contra el proveedor antes de guardarse** (GET `/v1/models`), se cifran en reposo con **AES-256-GCM** (`node:crypto`; master key de la env `LLM_KEYS_SECRET` o, como fallback documentado, derivada de `AUTH_SECRET` con scrypt y salt fija) y **jamás** se loggean, viajan al cliente (solo id/etiqueta/últimos 4) ni llegan a los proyectos generados. Cada run registra la key **por referencia** (`keyRef`), nunca por valor; un 401 del proveedor marca la key en Settings y el run falla con detalle accionable.
+
+**Cómo poner una key real de Anthropic:** entra como admin en *Ajustes → Claves LLM (BYOK)* → «Añadir key», proveedor *Anthropic*, pega tu `sk-ant-…` (la plataforma la valida con la API antes de cifrarla). Desde ese momento el asistente ofrece Anthropic como proveedor (modelo por defecto `claude-sonnet-4-6`). Lo mismo aplica a OpenAI (`OPENAI_MODEL_ID` permite ajustar el modelo, por defecto `gpt-4o`).
+
+**Mock para demo/e2e:** el proveedor `mock` es de primera clase — determinista (mismo contexto ⇒ misma propuesta), produce payloads válidos en español por skill, no necesita key, no toca la red y cuesta $0. Toda la demo y los e2e corren offline con él. El seed deja una key mock simbólica («Proveedor de demostración») y **un run real en `proposed`** sobre «Nosotros» para que vivas la decisión humana al abrir la demo.
+
+**Dónde se ve:** el asistente se abre desde el Cockpit, el Spec OS y el Studio (panel lateral; el violeta `--accent-agent` es exclusivo de actividad de agentes, §11.4); `/w/<slug>/p/<id>/runs` es el **agent run log** del proyecto (skill@versión, target, proveedor/modelo, coste, estado) y `/runs/<runId>` la pantalla de decisión: contrato lee→escribe con las versiones EXACTAS leídas (§9.6), validaciones, diff estructural y los botones Aprobar/Rechazar/Abrir en editor.
+
+**Demo end-to-end del paso 6:** con la demo sembrada, `npx tsx scripts/e2e-agents.ts` recorre las 5 skills por el camino de producción con el mock (startRun → proposed → diff → aprobación humana → versión sellada con provenance), el reject con feedback, el fallo AUTH_FAILED con key falsa (fetch mockeado, escaneo de fugas del plaintext en DB/disk/salida) y el render del Data propuesto por `compose-page-draft` con el renderer del template; al final **restaura los payloads originales** (versiones nuevas — el historial es inmutable) y revalida los `outdated` que provocó, dejando la demo como estaba (re-runnable).
+
 ## Postgres real
 
 Por defecto no hay nada que configurar (PGlite embebido). Para usar un Postgres de verdad, define `DATABASE_URL` (por ejemplo en `.env.local`, ver `.env.example`):
@@ -141,7 +160,10 @@ Con la variable definida, `npm run db:migrate`, `npm run db:seed` y la app usan 
 | `npm run lint`                        | ESLint                                                           |
 | `npx tsx scripts/e2e-generator.ts`    | Genera el proyecto demo + drill de conflictos §18.2 (re-runnable) |
 | `npx tsx scripts/e2e-studio.ts`       | Drill del paso 4: composición→diff→aprobación→regeneración→el sitio generado sirve el cambio (re-runnable) |
-| `npx tsx scripts/e2e-deploy-review.ts` | Drill del paso 5: release→deploy(preview)→review por token→rollback→stop (re-runnable; mata todo lo que arranca) |
+| `npx tsx scripts/e2e-deploy-review.ts` | Drill del paso 5: decide propuestas pendientes→release→deploy(preview)→review por token→rollback→stop (re-runnable; mata todo lo que arranca) |
+| `npx tsx scripts/e2e-agents.ts`       | Drill del paso 6: las 5 skills con mock→proposed→diff→decisión humana→provenance, reject, AUTH_FAILED sin fugas; restaura la demo al final (re-runnable) |
+| `npx tsx scripts/smoke-agents-runtime.ts` | Smoke del runtime de agentes: crypto BYOK, keys, runner, retries (aislado, se limpia solo) |
+| `npx tsx scripts/smoke-skills.ts`     | Smoke de las 5 skills + provenance agent_run (aislado, se limpia solo) |
 | `npx tsx scripts/smoke-review.ts`     | Smoke del módulo review/release (aislado, se limpia solo)        |
 | `npx tsx scripts/smoke-deploy.ts`     | Smoke del DeployProvider local (usa el repo demo; slots 4100/4200 quedan libres) |
 | `npx tsx scripts/smoke-artifacts.ts`  | Smoke del dominio de artefactos                                  |

@@ -21,6 +21,7 @@ import {
   getProjectArtifacts,
   type ProjectArtifact,
 } from "@/modules/artifacts/service";
+import { AssistantLauncher } from "@/modules/agents/assistant";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
 import { getProjectById } from "@/modules/platform-core/projects";
 import { getWorkspaceBySlug } from "@/modules/platform-core/workspaces";
@@ -206,6 +207,13 @@ export default async function StudioPageEditorPage({
           {artifact.currentVersion > 0 ? `v${artifact.currentVersion}` : "v0"}
         </span>
         <div className="ml-auto flex items-center gap-3">
+          <AssistantLauncher
+            surface="studio"
+            slug={slug}
+            projectId={projectId}
+            artifactType="page.composition"
+            artifactKey={pageKey}
+          />
           <MonoId id={artifact.id} />
           <Link
             href={artifactHref}
