@@ -22,6 +22,15 @@ export function getProjectRepoDir(projectId: string): string {
   return path.join(getProjectsBaseDir(), projectId);
 }
 
+/**
+ * Base URL where the generated site serves locally (the template's `dev`
+ * script defaults to port 4000). Override: `GENERATED_SITE_URL`. The platform
+ * only links here — whether the project is actually running is up to the user.
+ */
+export function getGeneratedSiteUrl(): string {
+  return process.env.GENERATED_SITE_URL ?? "http://localhost:4000";
+}
+
 /** Source template copied on first generation. */
 export function getTemplateDir(): string {
   return (

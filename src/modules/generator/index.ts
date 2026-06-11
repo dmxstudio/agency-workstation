@@ -21,7 +21,12 @@ export {
   type ManifestEntry,
   type OwnershipManifest,
 } from "./ownership";
-export { getProjectRepoDir, getProjectsBaseDir, getTemplateDir } from "./paths";
+export {
+  getGeneratedSiteUrl,
+  getProjectRepoDir,
+  getProjectsBaseDir,
+  getTemplateDir,
+} from "./paths";
 export {
   flattenSitemap,
   compositionFilePath,

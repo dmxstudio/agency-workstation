@@ -98,6 +98,11 @@ export interface StudioEditorProps {
   versionNumbers: number[];
   /** URL pública de la página en el sitio generado, p.ej. `/servicios`. */
   pagePath: string;
+  /**
+   * Base URL del sitio generado local, o null si el proyecto aún no se ha
+   * generado. Sirve la última generación corrida, no el borrador del canvas.
+   */
+  siteUrl: string | null;
   /** Ruta a la vista de artefacto (historial completo). */
   artifactHref: string;
   /** Ruta al artefacto cms.collections, o null. */
@@ -114,6 +119,7 @@ export function StudioEditor({
   initialDiff,
   versionNumbers,
   pagePath,
+  siteUrl,
   artifactHref,
   cmsArtifactHref,
 }: StudioEditorProps) {
@@ -314,6 +320,7 @@ export function StudioEditor({
   );
   const plugins = useMemo(() => [createApprovalPlugin()], []);
   const canvasCss = useMemo(() => studioCanvasCss(designTokens), [designTokens]);
+  const viewUrl = siteUrl ? `${siteUrl}${pagePath}` : null;
   const overrides = useMemo<Partial<Overrides>>(
     () => ({
       // Tokens del proyecto DENTRO del iframe del canvas (después de las
@@ -324,10 +331,26 @@ export function StudioEditor({
         </CanvasIframeStyles>
       ),
       // Sustituye el botón Publish de Puck: aquí no existe "publicar" — la
-      // única salida es el ciclo §13 del panel de aprobación.
-      headerActions: () => <HeaderSaveIndicator />,
+      // única salida es el ciclo §13 del panel de aprobación. "Ver página"
+      // abre la página en el sitio generado (última generación corrida).
+      headerActions: () => (
+        <>
+          {viewUrl ? (
+            <a
+              href={viewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Abre la página en el sitio generado local (sirve la última generación; requiere que el proyecto esté corriendo)"
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            >
+              Ver página ↗
+            </a>
+          ) : null}
+          <HeaderSaveIndicator />
+        </>
+      ),
     }),
-    [canvasCss],
+    [canvasCss, viewUrl],
   );
   const permissions = editable ? EDITABLE_PERMISSIONS : READ_ONLY_PERMISSIONS;
 

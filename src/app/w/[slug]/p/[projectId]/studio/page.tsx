@@ -9,6 +9,7 @@ import {
   type FlatPage,
   type ProjectArtifact,
 } from "@/modules/artifacts";
+import { getGeneratedSiteUrl, getProjectRepoDir, hasManifest } from "@/modules/generator";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
 import { getProjectById } from "@/modules/platform-core/projects";
 import { getWorkspaceBySlug } from "@/modules/platform-core/workspaces";
@@ -75,12 +76,29 @@ function sourceTitle(data: CompositionData): string | undefined {
   return undefined;
 }
 
+function ViewPageLink({ href }: { href: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Abre la página en el sitio generado local (sirve la última generación; requiere que el proyecto esté corriendo)"
+      className="inline-flex items-center gap-1 text-xs font-medium text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
+    >
+      Ver
+      <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
+    </a>
+  );
+}
+
 function CompositionCells({
   data,
   editorHref,
+  viewHref,
 }: {
   data: CompositionData | null;
   editorHref: string | null;
+  viewHref: string | null;
 }) {
   if (!data) {
     return (
@@ -91,7 +109,10 @@ function CompositionCells({
         <TableCell className="text-faint">—</TableCell>
         <TableCell className="text-faint">—</TableCell>
         <TableCell className="text-faint">—</TableCell>
-        <TableCell className="text-xs text-faint">Sincroniza para crearlo</TableCell>
+        <TableCell>
+          <span className="mr-3 text-xs text-faint">Sincroniza para crearlo</span>
+          {viewHref ? <ViewPageLink href={viewHref} /> : null}
+        </TableCell>
       </>
     );
   }
@@ -130,17 +151,20 @@ function CompositionCells({
         {data.byteSize != null ? formatBytes(data.byteSize) : <span className="text-faint">—</span>}
       </TableCell>
       <TableCell>
-        {editorHref ? (
-          <Link
-            href={editorHref}
-            className="inline-flex items-center gap-1 text-xs font-medium text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
-          >
-            Abrir editor
-            <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
-          </Link>
-        ) : (
-          <span className="text-faint">—</span>
-        )}
+        <span className="inline-flex items-center gap-3">
+          {editorHref ? (
+            <Link
+              href={editorHref}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            >
+              Abrir editor
+              <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
+            </Link>
+          ) : (
+            <span className="text-faint">—</span>
+          )}
+          {viewHref ? <ViewPageLink href={viewHref} /> : null}
+        </span>
       </TableCell>
     </>
   );
@@ -174,6 +198,11 @@ export default async function StudioIndexPage({
     (item) => item.artifact.type === "spec.sitemap" && item.artifact.key == null,
   );
   const sitemapApproved = sitemapItem != null && isApproved(sitemapItem);
+
+  // Enlaces "Ver": solo si existe una generación; el sitio sirve la última
+  // generación corrida (no el borrador del Studio) en el puerto local del
+  // proyecto generado.
+  const siteUrl = hasManifest(getProjectRepoDir(projectId)) ? getGeneratedSiteUrl() : null;
 
   // --- Sin sitemap aprobado: el Studio no tiene de qué derivar páginas -----
   if (!sitemapItem || !sitemapApproved) {
@@ -244,6 +273,18 @@ export default async function StudioIndexPage({
               sitemap v{sitemapItem.artifact.currentVersion}
             </span>
             <MonoId id={projectId} />
+            {siteUrl ? (
+              <a
+                href={siteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Abre el sitio generado local (sirve la última generación; requiere que el proyecto esté corriendo)"
+                className="inline-flex items-center gap-1 text-xs font-medium text-accent-action underline-offset-2 hover:underline"
+              >
+                Ver sitio
+                <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
+              </a>
+            ) : null}
           </>
         }
       />
@@ -311,6 +352,7 @@ export default async function StudioIndexPage({
                     <CompositionCells
                       data={data}
                       editorHref={data ? `${basePath}/studio/${data.key}` : null}
+                      viewHref={siteUrl ? `${siteUrl}${page.path}` : null}
                     />
                   </TableRow>
                 );

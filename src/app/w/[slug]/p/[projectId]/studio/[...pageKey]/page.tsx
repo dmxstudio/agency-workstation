@@ -21,6 +21,7 @@ import {
   getProjectArtifacts,
   type ProjectArtifact,
 } from "@/modules/artifacts/service";
+import { getGeneratedSiteUrl, getProjectRepoDir, hasManifest } from "@/modules/generator";
 import { getSessionUser } from "@/modules/platform-core/auth/adapter";
 import { getProjectById } from "@/modules/platform-core/projects";
 import { getWorkspaceBySlug } from "@/modules/platform-core/workspaces";
@@ -284,6 +285,7 @@ export default async function StudioPageEditorPage({
         initialDiff={diff}
         versionNumbers={history.versions.map((version) => version.version)}
         pagePath={pagePath}
+        siteUrl={hasManifest(getProjectRepoDir(projectId)) ? getGeneratedSiteUrl() : null}
         artifactHref={artifactHref}
         cmsArtifactHref={cmsArtifactHref}
       />
