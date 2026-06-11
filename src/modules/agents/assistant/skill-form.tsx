@@ -7,6 +7,11 @@ import { ArrowLeft, BookOpen, PenLine, TriangleAlert } from "lucide-react";
 import type { LlmProviderKind } from "@/db/schema";
 import { Button, Field, Input, Select, Textarea } from "@/ui";
 
+import {
+  ANTHROPIC_DEFAULT_MODEL,
+  ANTHROPIC_MODEL_OPTIONS,
+  formatPricePerMTok,
+} from "../model-catalog";
 import { startSkillRunAction } from "./actions";
 import type {
   AssistantArtifactInfo,
@@ -177,9 +182,15 @@ export function SkillForm({
   const selectedKey =
     providerKeys.find((key) => key.id === keyId) ?? providerKeys[0] ?? null;
 
+  // --- modelo por invocación (hoy con elección solo en Anthropic) ------------
+  const [modelId, setModelId] = useState<string>(ANTHROPIC_DEFAULT_MODEL);
+  const effectiveModelId = provider === "anthropic" ? modelId : null;
+  const pricePerMTok = formatPricePerMTok(provider, effectiveModelId);
+
   const changeProvider = (next: LlmProviderKind) => {
     setProvider(next);
     setKeyId(context.keys.find((key) => key.provider === next)?.id ?? "");
+    setModelId(ANTHROPIC_DEFAULT_MODEL);
   };
 
   // --- validación ligera client-side (la autoridad es el Zod del bind) ------
@@ -214,6 +225,7 @@ export function SkillForm({
         provider,
         params,
         keyId: provider === "mock" ? null : (selectedKey?.id ?? null),
+        modelId: effectiveModelId,
       });
       if (result.ok) {
         onLaunched(result.data);
@@ -417,6 +429,33 @@ export function SkillForm({
           ))}
         </Select>
       </Field>
+
+      {provider === "anthropic" ? (
+        <Field label="Modelo" htmlFor="assistant-model">
+          <Select
+            id="assistant-model"
+            value={modelId}
+            onChange={(event) => setModelId(event.target.value)}
+          >
+            {ANTHROPIC_MODEL_OPTIONS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label} — {option.hint}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      ) : null}
+      {pricePerMTok ? (
+        <p className="-mt-2 text-[11px] text-faint">
+          Costo por MTok:{" "}
+          <span className="font-mono text-muted">{pricePerMTok}</span>
+        </p>
+      ) : provider === "openai" ? (
+        <p className="-mt-2 text-[11px] text-faint">
+          Costo por MTok: <span className="font-mono">sin tarifa configurada</span> — el coste
+          estimado del run se mostrará como $0.
+        </p>
+      ) : null}
 
       {provider !== "mock" && providerKeys.length > 1 ? (
         <Field label="API key del workspace" htmlFor="assistant-key">

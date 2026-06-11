@@ -25,21 +25,14 @@ import { pick, pickNumber, pickString, retryDelayMs, safeParseJson, sleep } from
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
-/** Exact model ids (June 2026 — no date suffixes). NEVER invent others. */
-export const ANTHROPIC_MODEL_IDS = [
-  "claude-sonnet-4-6", // $3/$15 per MTok — sensible default for skills
-  "claude-opus-4-8", // $5/$25 — most capable
-  "claude-haiku-4-5", // $1/$5 — cheap
-] as const;
-
-export const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4-6";
-
-/** USD per MILLION tokens (input/output), June 2026. */
-export const ANTHROPIC_PRICES_USD_PER_MTOK: Record<string, { input: number; output: number }> = {
-  "claude-sonnet-4-6": { input: 3, output: 15 },
-  "claude-opus-4-8": { input: 5, output: 25 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
-};
+// Ids y tarifas viven en el catálogo puro (client-safe) para que el selector
+// de modelo del asistente los comparta sin arrastrar el provider al bundle.
+export {
+  ANTHROPIC_DEFAULT_MODEL,
+  ANTHROPIC_MODEL_IDS,
+  ANTHROPIC_PRICES_USD_PER_MTOK,
+} from "../../model-catalog";
+import { ANTHROPIC_DEFAULT_MODEL } from "../../model-catalog";
 
 const RETRYABLE_STATUSES = new Set([429, 500, 529]);
 

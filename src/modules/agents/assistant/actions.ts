@@ -158,6 +158,11 @@ export interface StartSkillRunInput {
   params: Record<string, unknown>;
   /** Key concreta del workspace; por defecto la más reciente del proveedor. */
   keyId?: string | null;
+  /**
+   * Modelo por invocación (hoy solo Anthropic ofrece elección); null = default
+   * del proveedor. El runner valida el id contra la lista conocida.
+   */
+  modelId?: string | null;
 }
 
 /**
@@ -187,6 +192,7 @@ export async function startSkillRunAction(
         targetKey: bound.target.key,
         instruction: bound.instruction,
         keyId: input.keyId ?? null,
+        modelId: input.modelId ?? null,
       },
       actor,
     );
